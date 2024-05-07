@@ -115,6 +115,10 @@ public class SimpleProjectsFixture
         // Given
         StringWriter log = new StringWriter();
         IProjectAnalyzer analyzer = GetProjectAnalyzer(projectFile, log);
+
+        // This will result in a malformed msbuild command, and buildalyzer will hang
+        analyzer.SetGlobalProperty("NoWarn", "NETSDK1057;NU5104;NU1605");
+        
         EnvironmentOptions options = new EnvironmentOptions
         {
             Preference = preference
