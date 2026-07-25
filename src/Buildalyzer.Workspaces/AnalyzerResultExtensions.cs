@@ -632,6 +632,13 @@ public static class AnalyzerResultExtensions
     /// compiler-backed accessors (<c>SourceFiles</c>, <c>References</c>, ...) are empty even though the project
     /// evaluated its <c>Compile</c> items. In that case the workspace is reconstructed from evaluation-time
     /// items and the resolved <c>ReferencePath</c> captured from ResolveAssemblyReference. See issue #341.
+    /// <para>
+    /// Only safe for languages whose compilation is order-insensitive. Evaluated <c>Compile</c> items are
+    /// in declaration order, which for F# is not compile order (<c>FSharpSourceCodeCompileOrder</c> re-sorts
+    /// them by <c>CompileOrder</c> metadata before <c>CoreCompile</c>), so this fallback would silently
+    /// produce a differently-meaning compilation. F# never reaches here today because
+    /// <see cref="TryGetSupportedLanguageName"/> rejects <c>.fsproj</c>; guard this if that ever changes.
+    /// </para>
     /// </summary>
     private static bool ShouldFallBackToItems(IAnalyzerResult analyzerResult) =>
         (analyzerResult.SourceFiles is null || analyzerResult.SourceFiles.Length == 0)

@@ -595,6 +595,62 @@ public class SimpleProjectsFixture
         results.Should().AllSatisfy(x => x.Succeeded.Should().BeTrue(), log.ToString());
     }
 
+    /// <remarks>
+    /// F# has no forward references, so the order of the source files is semantic. It is also not the
+    /// order the project file declares them in: Microsoft.FSharp.Targets runs FSharpSourceCodeCompileOrder
+    /// before CoreCompile, re-sorting @(Compile) by its CompileOrder metadata. The reported source files
+    /// must therefore follow the order the compiler receives, not evaluation order.
+    /// </remarks>
+    [Test]
+    public void BuildsFSharpProjectInCompileOrder()
+    {
+        // Given
+        const string projectFile = @"FSharpProject\FSharpProject.fsproj";
+        StringWriter log = new StringWriter();
+        IProjectAnalyzer analyzer = GetProjectAnalyzer(projectFile, log);
+
+        // When
+        DeleteProjectDirectory(projectFile, "obj");
+        DeleteProjectDirectory(projectFile, "bin");
+        IAnalyzerResults results = analyzer.Build();
+
+        // Then
+        results.OverallSuccess.Should().BeTrue(log.ToString());
+
+        string[] authored = ["Prelude.fs", "Constants.fs", "Greeting.fs", "Program.fs"];
+
+        results.First().SourceFiles
+            .Select(Path.GetFileName)
+            .Where(authored.Contains)
+            .Should().Equal(["Prelude.fs", "Constants.fs", "Greeting.fs", "Program.fs"], log.ToString());
+    }
+
+    /// <remarks>
+    /// A design-time build must not invoke fsc: it is the difference between analysing an F# project in
+    /// milliseconds and compiling it, and it keeps analysis working when the compiler itself would fail.
+    /// </remarks>
+    [Test]
+    public void BuildsFSharpProjectWithoutRunningTheCompiler()
+    {
+        // Given
+        const string projectFile = @"FSharpProject\FSharpProject.fsproj";
+        StringWriter log = new StringWriter();
+        IProjectAnalyzer analyzer = GetProjectAnalyzer(projectFile, log);
+
+        // When
+        DeleteProjectDirectory(projectFile, "obj");
+        DeleteProjectDirectory(projectFile, "bin");
+        IAnalyzerResults results = analyzer.Build();
+
+        // Then
+        results.OverallSuccess.Should().BeTrue(log.ToString());
+
+        string outputAssembly = results.First().GetProperty("TargetPath");
+        outputAssembly.Should().NotBeNullOrEmpty();
+        File.Exists(outputAssembly).Should().BeFalse(
+            "a design-time build skips compiler execution, so no assembly should be produced");
+    }
+
     [Test]
     public void BuildsVisualBasicProject()
     {

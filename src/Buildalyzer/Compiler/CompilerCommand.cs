@@ -18,6 +18,14 @@ public abstract record CompilerCommand
     public FileInfo? CompilerLocation { get; init; }
 
     /// <summary>The source files fed to the compiler.</summary>
+    /// <remarks>
+    /// In the order the compiler receives them, which is not necessarily the order the project file
+    /// declares them in. This matters for F#, where compilation order is semantic and
+    /// <c>Microsoft.FSharp.Targets</c> re-sorts <c>@(Compile)</c> by its <c>CompileOrder</c> metadata
+    /// before <c>CoreCompile</c> runs; generated sources are hoisted to the front. Consumers that need
+    /// compile order (such as <c>FSharpProjectOptions.SourceFiles</c>) must use this rather than the
+    /// evaluated <c>Compile</c> items.
+    /// </remarks>
     public ImmutableArray<string> SourceFiles { get; init; } = [];
 
     /// <summary>The additional files fed to the compiler.</summary>

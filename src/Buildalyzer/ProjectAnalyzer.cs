@@ -422,7 +422,6 @@ public class ProjectAnalyzer : IProjectAnalyzer
         var projectFile = IOPath.Parse(ProjectFile.Path);
 
         var props = BuildCommandProperties.Create(
-            projectFile,
             targetFramework,
             buildEnvironment.GlobalProperties,
             Manager.GlobalProperties,
