@@ -118,7 +118,8 @@ public class AnalyzerManager : IAnalyzerManager
 
         // If MSBuild exits without ever writing to the pipe (e.g. an invalid binary log or a startup
         // failure), the server keeps its client handle open so the read never sees EOF. Dispose the
-        // logger on such an exit to unblock ReadAll rather than hang indefinitely.
+        // logger on such an exit so the read ends as soon as the replay has failed, rather than waiting
+        // out the drain timeout.
         void OnProcessRunnerExited()
         {
             if (eventCollector.IsEmpty && processRunner.ExitCode != 0)
@@ -129,16 +130,7 @@ public class AnalyzerManager : IAnalyzerManager
 
         processRunner.Exited += OnProcessRunnerExited;
         processRunner.Start();
-        try
-        {
-            pipeLogger.ReadAll();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Ignore
-        }
-
-        processRunner.WaitForExit();
+        PipeLoggerDrain.ReadUntilExit(pipeLogger, processRunner);
 
         return new AnalyzerResults
         {

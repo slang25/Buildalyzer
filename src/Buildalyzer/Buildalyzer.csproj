@@ -18,6 +18,7 @@ ToBeReleased
 - Introduction of SolutionInfo and ProjectInfo.
 - Support SLNX.
 - The log writer (AnalyzerManagerOptions.LogWriter) is now written to under a lock, so a non-thread-safe TextWriter such as a StringWriter can be passed safely.
+- A build no longer waits for MSBuild's redirected output streams to close. Task host nodes inherit the write end and outlive the build, so a build that finished in seconds could stall the analysis until they idled out.
 - IAnalyzerResult now exposes AnalyzerConfigFiles (the .editorconfig/.globalconfig paths passed to the compiler). (BREAKING for implementers)
 - IAnalyzerResult now exposes ReferencesEmbeddingInteropTypes (the references whose EmbedInteropTypes metadata is true). (BREAKING for implementers)
 - IAnalyzerResults.BuildEventArguments has been removed from the public API; the raw pipe events are an implementation detail (XenoAtom.MsBuildPipeLogger types are no longer exposed). (BREAKING)
@@ -34,7 +35,7 @@ ToBeReleased
          (which does reference Microsoft.Build.Framework) runs inside the out-of-process MSBuild. -->
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.0" />
     <PackageReference Include="Microsoft.VisualStudio.SolutionPersistence" Version="1.0.52" />
-    <PackageReference Include="XenoAtom.MsBuildPipeLogger" Version="1.1.1" ExcludeAssets="contentFiles" />
+    <PackageReference Include="XenoAtom.MsBuildPipeLogger" Version="2.0.0" ExcludeAssets="contentFiles" />
   </ItemGroup>
 
   <ItemGroup Label="Build dependencies">

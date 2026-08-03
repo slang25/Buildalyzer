@@ -72,17 +72,33 @@ internal sealed class ProcessRunner : IDisposable
         return this;
     }
 
-    public void WaitForExit() => Process.WaitForExit();
+    /// <summary>Waits for the process to exit.</summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Process.WaitForExit()"/>: with output redirected that overload also waits
+    /// for the standard output and error streams to reach end of file, and those streams outlive the build.
+    /// MSBuild leaves task host nodes running after it exits and they inherited the write end, so end of file
+    /// can arrive minutes later - a build that finished in seconds would block here until it does. The
+    /// timeout overload waits on the process alone (which is why the documentation tells you to follow it
+    /// with the parameterless one to flush the handlers), so loop on that instead. The output collected here
+    /// only feeds debug logging, so losing whatever tail is still in flight costs nothing.
+    /// </remarks>
+    public void WaitForExit()
+    {
+        while (!Process.WaitForExit(WaitInterval))
+        {
+        }
+    }
 
+    /// <summary>Waits for the process to exit, and for its output to be collected, up to a timeout.</summary>
     public bool WaitForExit(int timeout)
     {
         bool exited = Process.WaitForExit(timeout);
         if (exited)
         {
-            // To ensure that asynchronous event handling has been completed, call the WaitForExit() overload that takes no parameter after receiving a true from this overload.
-            // From https://docs.microsoft.com/en-us/dotnet/api/system.diagnostics.process.waitforexit?redirectedfrom=MSDN&view=netcore-3.1#System_Diagnostics_Process_WaitForExit_System_Int32_
-            // See also https://github.com/dotnet/runtime/issues/27128
-            Process.WaitForExit();
+            // The process has gone, but its asynchronous output handlers may not have run yet and callers of
+            // this overload read Data. Wait on the collector rather than calling the parameterless
+            // WaitForExit() the documentation suggests, whose wait for end of file is unbounded (see above).
+            Collector.WaitForCompletion(timeout);
         }
         return exited;
     }
@@ -123,4 +139,7 @@ internal sealed class ProcessRunner : IDisposable
     }
 
     private static string NewLine => System.Environment.NewLine;
+
+    /// <summary>How long a single wait on the process handle lasts before it is repeated.</summary>
+    private const int WaitInterval = 60_000;
 }
