@@ -21,6 +21,17 @@ internal readonly struct IOPath : IEquatable<IOPath>, IFormattable
     /// <summary>Returns true if the file system is case sensitive.</summary>
     public static readonly bool IsCaseSensitive = InitCaseSensitivity();
 
+    /// <summary>Compares path strings the way the current file system does.</summary>
+    /// <remarks>
+    /// Ordinal on a case-sensitive file system, case-insensitive elsewhere. Key and de-duplicate
+    /// paths with this rather than with <see cref="StringComparer.OrdinalIgnoreCase"/>: on Linux two
+    /// paths that differ only by case are two different files and must not be conflated.
+    /// </remarks>
+    public static readonly StringComparer Comparer = IsCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
+    /// <inheritdoc cref="Comparer" />
+    public static readonly StringComparison Comparison = IsCaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     private readonly string _path;
 

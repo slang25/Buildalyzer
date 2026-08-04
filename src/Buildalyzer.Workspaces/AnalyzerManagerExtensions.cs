@@ -54,12 +54,12 @@ public static class AnalyzerManagerExtensions
             .AsParallel()
             .Select(p => (Path: AnalyzerResultExtensions.NormalizePath(p.ProjectFile.Path), Results: p.Build().Where(r => r.Succeeded).ToArray()))
             .ToList()
-            .ToDictionary(x => x.Path, x => x.Results, System.StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
 
         // Add each project - one Roslyn project per target framework - wiring project references by
         // output-assembly path. The shared visited set means each project (and its references) is
         // added exactly once even when several solution projects reference it.
-        HashSet<string> visited = new(System.StringComparer.OrdinalIgnoreCase);
+        HashSet<string> visited = new(IOPath.Comparer);
         foreach (IProjectAnalyzer analyzer in analyzers)
         {
             AnalyzerResultExtensions.AddAnalyzer(analyzer, workspace, addProjectReferences: true, visited, prebuilt);

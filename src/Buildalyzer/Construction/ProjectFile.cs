@@ -1,5 +1,6 @@
 using System.IO;
 using System.Xml.Linq;
+using Buildalyzer.IO;
 
 namespace Buildalyzer.Construction;
 
@@ -86,8 +87,8 @@ public class ProjectFile : IProjectFile
             .Select(x => x.GetAttributeValue(ProjectFileNames.Include))
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(TryResolveReferencePath)
-            .Where(x => x is not null)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OfType<string>()
+            .Distinct(IOPath.Comparer)
             .ToArray()
     ];
 
@@ -95,7 +96,7 @@ public class ProjectFile : IProjectFile
     // (e.g. "..\Library\Library.csproj"); normalize and resolve against the project directory. A
     // malformed Include (invalid path characters, an unexpanded $(property)) must not take down the
     // parse - this is only a best-effort hint - so an unresolvable entry is dropped rather than thrown.
-    private string TryResolveReferencePath(string include)
+    private string? TryResolveReferencePath(string include)
     {
         try
         {

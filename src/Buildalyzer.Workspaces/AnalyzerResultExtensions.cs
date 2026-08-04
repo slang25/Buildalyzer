@@ -11,6 +11,7 @@ using Microsoft.CodeAnalysis.Host;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis.VisualBasic;
 using Buildalyzer.Construction;
+using Buildalyzer.IO;
 
 namespace Buildalyzer.Workspaces;
 
@@ -42,15 +43,18 @@ public static class AnalyzerResultExtensions
     /// <c>true</c> to add projects to the workspace for project references that exist in the same <see cref="AnalyzerManager"/>.
     /// If <c>true</c> this will trigger (re)building all referenced projects. Directly add <see cref="AnalyzerResult"/> instances instead if you already have them available.
     /// </param>
-    /// <returns>The newly added Roslyn project, or <c>null</c> if the project couldn't be added to the workspace.</returns>
-    public static Project AddToWorkspace(this IAnalyzerResult analyzerResult, Workspace workspace, bool addProjectReferences = false)
+    /// <returns>
+    /// The newly added Roslyn project, or <c>null</c> if the project couldn't be added to the workspace
+    /// (most commonly because its language is not one Roslyn workspaces support, such as F#).
+    /// </returns>
+    public static Project? AddToWorkspace(this IAnalyzerResult analyzerResult, Workspace workspace, bool addProjectReferences = false)
     {
         Guard.NotNull(analyzerResult);
         Guard.NotNull(workspace);
 
         // Add the referenced projects first (post-order) so this result can wire to their outputs.
         // Seed the visited set with this project so a reference cycle can't re-add it.
-        HashSet<string> visited = new(StringComparer.OrdinalIgnoreCase) { NormalizePath(analyzerResult.ProjectFilePath) };
+        HashSet<string> visited = new(IOPath.Comparer) { NormalizePath(analyzerResult.ProjectFilePath) };
         if (addProjectReferences)
         {
             // Build the referenced-project closure up front in parallel (this project's own result is
@@ -72,7 +76,7 @@ public static class AnalyzerResultExtensions
     /// binds the exact framework flavour of a multi-targeted dependency that MSBuild resolved. Returns the
     /// ProjectIds of this analyzer's own per-framework projects, in framework order.
     /// </summary>
-    internal static IReadOnlyList<ProjectId> AddAnalyzer(IProjectAnalyzer analyzer, Workspace workspace, bool addProjectReferences, HashSet<string> visited, IReadOnlyDictionary<string, IAnalyzerResult[]> prebuilt = null)
+    internal static IReadOnlyList<ProjectId> AddAnalyzer(IProjectAnalyzer analyzer, Workspace workspace, bool addProjectReferences, HashSet<string> visited, IReadOnlyDictionary<string, IAnalyzerResult[]>? prebuilt = null)
     {
         string projectPath = NormalizePath(analyzer.ProjectFile.Path);
         if (!visited.Add(projectPath))
@@ -114,12 +118,11 @@ public static class AnalyzerResultExtensions
         return ids;
     }
 
-    private static void AddReferencedAnalyzers(IAnalyzerManager manager, IEnumerable<string> projectReferences, Workspace workspace, HashSet<string> visited, IReadOnlyDictionary<string, IAnalyzerResult[]> prebuilt)
+    private static void AddReferencedAnalyzers(IAnalyzerManager manager, IEnumerable<string> projectReferences, Workspace workspace, HashSet<string> visited, IReadOnlyDictionary<string, IAnalyzerResult[]>? prebuilt)
     {
-        foreach (string referencePath in projectReferences.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (string referencePath in projectReferences.Distinct(IOPath.Comparer))
         {
-            IProjectAnalyzer referenced = ResolveReferenced(manager, referencePath);
-            if (referenced is not null)
+            if (ResolveReferenced(manager, referencePath) is { } referenced)
             {
                 AddAnalyzer(referenced, workspace, addProjectReferences: true, visited, prebuilt);
             }
@@ -143,7 +146,7 @@ public static class AnalyzerResultExtensions
         IAnalyzerManager manager, IEnumerable<IProjectAnalyzer> roots)
     {
         // Discover the closure (cheap XML parse per project); dedupe by canonical project path.
-        Dictionary<string, IProjectAnalyzer> closure = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, IProjectAnalyzer> closure = new(IOPath.Comparer);
         Queue<IProjectAnalyzer> pending = new();
         foreach (IProjectAnalyzer root in roots)
         {
@@ -174,13 +177,13 @@ public static class AnalyzerResultExtensions
             .AsParallel()
             .Select(a => (Path: NormalizePath(a.ProjectFile.Path), Results: a.Build().Where(r => r.Succeeded).ToArray()))
             .ToList()
-            .ToDictionary(x => x.Path, x => x.Results, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
     }
 
     private static IReadOnlyList<IProjectAnalyzer> ResolveReferencedRoots(IAnalyzerManager manager, IEnumerable<string> projectReferences)
     {
         List<IProjectAnalyzer> roots = [];
-        foreach (string reference in projectReferences.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (string reference in projectReferences.Distinct(IOPath.Comparer))
         {
             if (ResolveReferenced(manager, reference) is { } referenced)
             {
@@ -191,7 +194,7 @@ public static class AnalyzerResultExtensions
         return roots;
     }
 
-    private static IProjectAnalyzer ResolveReferenced(IAnalyzerManager manager, string referencePath) =>
+    private static IProjectAnalyzer? ResolveReferenced(IAnalyzerManager manager, string referencePath) =>
         manager.Projects.TryGetValue(referencePath, out IProjectAnalyzer existing)
             ? existing
             : manager.GetProject(referencePath);
@@ -257,7 +260,7 @@ public static class AnalyzerResultExtensions
 
     private static Dictionary<string, ProjectId> BuildOutputIndex(Solution solution, ProjectId exclude)
     {
-        Dictionary<string, ProjectId> index = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, ProjectId> index = new(IOPath.Comparer);
         foreach (Project project in solution.Projects)
         {
             if (project.Id.Equals(exclude))
@@ -287,7 +290,7 @@ public static class AnalyzerResultExtensions
         string normalized = NormalizePath(outputPath);
         foreach (Project project in solution.Projects)
         {
-            if (project.OutputFilePath is { } path && NormalizePath(path).Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            if (project.OutputFilePath is { } path && NormalizePath(path).Equals(normalized, IOPath.Comparison))
             {
                 return project.Id;
             }
@@ -675,7 +678,7 @@ public static class AnalyzerResultExtensions
         string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
         return [.. items
             .Select(x => Path.GetFullPath(x.ItemSpec, projectDirectory!))
-            .Distinct(StringComparer.OrdinalIgnoreCase)];
+            .Distinct(IOPath.Comparer)];
     }
 
     // Preserve the file's own encoding (detecting a BOM, defaulting to UTF-8) rather than forcing a

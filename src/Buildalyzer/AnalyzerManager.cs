@@ -13,8 +13,7 @@ public class AnalyzerManager : IAnalyzerManager
     // Match project paths the way the current file system does (ordinal on case-sensitive
     // file systems, case-insensitive elsewhere) so the same project isn't tracked twice when
     // its path arrives with different casing.
-    private readonly ConcurrentDictionary<string, IProjectAnalyzer> _projects
-        = new(IOPath.IsCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, IProjectAnalyzer> _projects = new(IOPath.Comparer);
 
     public IReadOnlyDictionary<string, IProjectAnalyzer> Projects => _projects;
 

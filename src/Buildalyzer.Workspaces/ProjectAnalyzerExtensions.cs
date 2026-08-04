@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Buildalyzer.IO;
 using Microsoft.CodeAnalysis;
 
 namespace Buildalyzer.Workspaces;
@@ -36,17 +37,19 @@ public static class ProjectAnalyzerExtensions
     /// The newly added Roslyn project. A multi-targeted project is added as one project per target
     /// framework (named <c>Name(tfm)</c>, matching MSBuildWorkspace); the first target framework's
     /// project is returned, and every framework is present in <c>workspace.CurrentSolution</c>.
+    /// <c>null</c> when nothing could be added - the project's language is not one Roslyn workspaces
+    /// support (such as F#), or no target framework built successfully.
     /// </returns>
-    public static Project AddToWorkspace(this IProjectAnalyzer analyzer, Workspace workspace, bool addProjectReferences = false)
+    public static Project? AddToWorkspace(this IProjectAnalyzer analyzer, Workspace workspace, bool addProjectReferences = false)
     {
         Guard.NotNull(analyzer);
         Guard.NotNull(workspace);
 
-        HashSet<string> visited = new(System.StringComparer.OrdinalIgnoreCase);
+        HashSet<string> visited = new(IOPath.Comparer);
 
         // When pulling in project references, build the whole reference closure (this project included)
         // up front in parallel, then populate the workspace sequentially reusing those results.
-        IReadOnlyDictionary<string, IAnalyzerResult[]> prebuilt = addProjectReferences
+        IReadOnlyDictionary<string, IAnalyzerResult[]>? prebuilt = addProjectReferences
             ? AnalyzerResultExtensions.PrebuildReferenceClosure(analyzer.Manager, [analyzer])
             : null;
         IReadOnlyList<ProjectId> ids = AnalyzerResultExtensions.AddAnalyzer(analyzer, workspace, addProjectReferences, visited, prebuilt);
