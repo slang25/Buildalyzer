@@ -204,7 +204,7 @@ public static class AnalyzerResultExtensions
     // existing project when the same output has already been added (idempotent).
     private static ProjectId? AddResult(IAnalyzerResult analyzerResult, Workspace workspace, bool addDiscriminator)
     {
-        if (!TryGetSupportedLanguageName(analyzerResult.ProjectFilePath, out _))
+        if (!TryGetSupportedLanguageName(analyzerResult.ProjectFilePath, out string languageName))
         {
             return null;
         }
@@ -215,15 +215,23 @@ public static class AnalyzerResultExtensions
             return existingId;
         }
 
+        // Parse the captured compiler command line once and share it across options, documents and
+        // references. It is the authoritative record of what the compiler actually saw and is present in
+        // virtually every binary log (the csc/vbc command line is a normal-verbosity message), so it also
+        // backfills the compiler-derived inputs when the structured task-input events weren't captured.
+        string? projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        CommandLineArguments? commandLine = ParseCommandLine(analyzerResult, languageName, projectDirectory);
+
         ProjectId projectId = ProjectId.CreateNewId();
-        Microsoft.CodeAnalysis.ProjectInfo projectInfo = GetProjectInfo(analyzerResult, workspace, projectId, ProjectName(analyzerResult, addDiscriminator));
+        Microsoft.CodeAnalysis.ProjectInfo projectInfo = GetProjectInfo(
+            analyzerResult, workspace, projectId, ProjectName(analyzerResult, addDiscriminator), languageName, projectDirectory, commandLine);
         if (projectInfo is null)
         {
             return null;
         }
 
         Solution solution = workspace.CurrentSolution.AddProject(projectInfo);
-        solution = WireProjectReferences(solution, projectId, analyzerResult);
+        solution = WireProjectReferences(solution, projectId, analyzerResult, commandLine);
 
         if (!workspace.TryApplyChanges(solution))
         {
@@ -238,7 +246,7 @@ public static class AnalyzerResultExtensions
     // project reference. The reference is not also a metadata reference because a design-time build never
     // produces the output on disk (GetMetadataReferences filters by File.Exists). This is how
     // MSBuildWorkspace resolves the exact framework flavour of a multi-targeted dependency.
-    private static Solution WireProjectReferences(Solution solution, ProjectId projectId, IAnalyzerResult analyzerResult)
+    private static Solution WireProjectReferences(Solution solution, ProjectId projectId, IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
     {
         Dictionary<string, ProjectId> outputToProject = BuildOutputIndex(solution, projectId);
         if (outputToProject.Count == 0)
@@ -247,7 +255,7 @@ public static class AnalyzerResultExtensions
         }
 
         HashSet<ProjectId> referenced = [];
-        foreach (string reference in GetReferencePaths(analyzerResult))
+        foreach (string reference in GetReferencePaths(analyzerResult, commandLine))
         {
             if (outputToProject.TryGetValue(NormalizePath(reference), out ProjectId targetId) && referenced.Add(targetId))
             {
@@ -302,9 +310,17 @@ public static class AnalyzerResultExtensions
     // The resolved reference paths used for output-path correlation. Unlike GetMetadataReferences these
     // are NOT filtered by File.Exists: a project reference resolves to a dependency's output that a
     // design-time build never writes to disk, and that (nonexistent) path is exactly what we match on.
-    private static IEnumerable<string> GetReferencePaths(IAnalyzerResult analyzerResult)
+    private static IEnumerable<string> GetReferencePaths(IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
     {
         string[] references = analyzerResult.References ?? [];
+
+        // The command line's /reference: switches list the same resolved assembly paths (project outputs
+        // included), so they correlate to project references too when task inputs weren't captured.
+        if (references.Length == 0 && commandLine is not null)
+        {
+            references = [.. commandLine.MetadataReferences.Select(r => r.Reference)];
+        }
+
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
             references = GetItemPaths(analyzerResult, "ReferencePath");
@@ -323,15 +339,12 @@ public static class AnalyzerResultExtensions
 
     internal static string NormalizePath(string path) => Path.GetFullPath(path);
 
-    private static Microsoft.CodeAnalysis.ProjectInfo? GetProjectInfo(IAnalyzerResult analyzerResult, Workspace workspace, ProjectId projectId, string projectName)
+    private static Microsoft.CodeAnalysis.ProjectInfo? GetProjectInfo(
+        IAnalyzerResult analyzerResult, Workspace workspace, ProjectId projectId, string projectName,
+        string languageName, string? projectDirectory, CommandLineArguments? commandLine)
     {
-        if (!TryGetSupportedLanguageName(analyzerResult.ProjectFilePath, out string languageName))
-        {
-            return null;
-        }
-
         string assemblyName = analyzerResult.GetProperty("AssemblyName") is { Length: > 0 } name ? name : projectName;
-        (CompilationOptions? compilationOptions, ParseOptions? parseOptions) = CreateOptions(analyzerResult, languageName);
+        (CompilationOptions? compilationOptions, ParseOptions? parseOptions) = CreateOptions(analyzerResult, languageName, projectDirectory, commandLine);
 
         // Project references are wired after the project is added, by output-assembly path, so that a
         // multi-targeted dependency resolves to the exact framework flavour MSBuild chose (see WireProjectReferences).
@@ -346,28 +359,59 @@ public static class AnalyzerResultExtensions
             outputRefFilePath: analyzerResult.GetProperty("TargetRefPath"),
             compilationOptions: compilationOptions,
             parseOptions: parseOptions,
-            documents: GetDocuments(analyzerResult, projectId),
+            documents: GetDocuments(analyzerResult, projectId, commandLine),
             projectReferences: [],
-            metadataReferences: GetMetadataReferences(analyzerResult),
-            analyzerReferences: GetAnalyzerReferences(analyzerResult, workspace),
-            additionalDocuments: GetAdditionalDocuments(analyzerResult, projectId))
+            metadataReferences: GetMetadataReferences(analyzerResult, commandLine),
+            analyzerReferences: GetAnalyzerReferences(analyzerResult, workspace, commandLine),
+            additionalDocuments: GetAdditionalDocuments(analyzerResult, projectId, commandLine))
             .WithDefaultNamespace(analyzerResult.GetProperty("RootNamespace"))
-            .WithAnalyzerConfigDocuments(GetAnalyzerConfigDocuments(analyzerResult, projectId));
+            .WithAnalyzerConfigDocuments(GetAnalyzerConfigDocuments(analyzerResult, projectId, commandLine));
     }
 
     /// <summary>
-    /// Produces the compilation and parse options. The primary source is the compiler command line
-    /// that the design-time build produced: parsing it with Roslyn's own command-line parser yields
-    /// exactly the options the compiler used (and that MSBuildWorkspace reports), covering defines,
-    /// language version, unsafe/checked/nullable, optimization, platform, warning level, documentation
-    /// mode and the full diagnostic configuration in one shot. When no command line was captured
-    /// (e.g. the build failed before the compiler task ran) it falls back to reconstructing the options
-    /// from evaluated MSBuild properties - a best effort that is necessarily less complete.
+    /// Parses the captured compiler command line with Roslyn's own parser, or returns <c>null</c> when no
+    /// command line was captured (e.g. the build failed before the compiler task ran). The result is the
+    /// authoritative record of what the compiler saw - defines, language version, unsafe/checked/nullable,
+    /// optimization, platform, warning level, documentation mode and full diagnostic configuration, plus the
+    /// resolved source/reference/analyzer/additional/analyzer-config sets - and is used both for the
+    /// compilation/parse options and to backfill those inputs when the structured task-input events are absent.
     /// </summary>
-    private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateOptions(IAnalyzerResult analyzerResult, string languageName)
+    /// <remarks>
+    /// Language-specific parsing stays in local functions so the parser assembly for the other language is
+    /// never loaded for a project that does not use it.
+    /// </remarks>
+    private static CommandLineArguments? ParseCommandLine(IAnalyzerResult analyzerResult, string languageName, string? projectDirectory)
     {
-        string? projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
-        (CompilationOptions? compilationOptions, ParseOptions? parseOptions) = CreateRawOptions(analyzerResult, languageName, projectDirectory);
+        if (analyzerResult.CompilerArguments is not { Length: > 0 } arguments)
+        {
+            return null;
+        }
+
+        if (languageName == LanguageNames.CSharp)
+        {
+            CommandLineArguments ParseCSharp() => CSharpCommandLineParser.Default.Parse(arguments, projectDirectory, sdkDirectory: null);
+            return ParseCSharp();
+        }
+
+        if (languageName == LanguageNames.VisualBasic)
+        {
+            CommandLineArguments ParseVisualBasic() => VisualBasicCommandLineParser.Default.Parse(arguments, projectDirectory, sdkDirectory: null);
+            return ParseVisualBasic();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Produces the compilation and parse options. The primary source is the parsed compiler command line,
+    /// which yields exactly the options the compiler used (and that MSBuildWorkspace reports). When no command
+    /// line was captured it falls back to reconstructing the options from evaluated MSBuild properties - a
+    /// best effort that is necessarily less complete.
+    /// </summary>
+    private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateOptions(
+        IAnalyzerResult analyzerResult, string languageName, string? projectDirectory, CommandLineArguments? commandLine)
+    {
+        (CompilationOptions? compilationOptions, ParseOptions? parseOptions) = CreateRawOptions(analyzerResult, languageName, commandLine);
 
         if (compilationOptions is not null)
         {
@@ -377,33 +421,12 @@ public static class AnalyzerResultExtensions
         return (compilationOptions, parseOptions);
     }
 
-    private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateRawOptions(IAnalyzerResult analyzerResult, string languageName, string? projectDirectory)
+    private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateRawOptions(
+        IAnalyzerResult analyzerResult, string languageName, CommandLineArguments? commandLine)
     {
-        if (analyzerResult.CompilerArguments is { Length: > 0 } arguments)
+        if (commandLine is not null)
         {
-            // Language-specific parsing stays in local functions so the parser assembly for the other
-            // language is never loaded for a project that does not use it.
-            if (languageName == LanguageNames.CSharp)
-            {
-                (CompilationOptions, ParseOptions) FromCSharpCommandLine()
-                {
-                    CSharpCommandLineArguments parsed = CSharpCommandLineParser.Default.Parse(arguments, projectDirectory, sdkDirectory: null);
-                    return (parsed.CompilationOptions, parsed.ParseOptions);
-                }
-
-                return FromCSharpCommandLine();
-            }
-
-            if (languageName == LanguageNames.VisualBasic)
-            {
-                (CompilationOptions, ParseOptions) FromVisualBasicCommandLine()
-                {
-                    VisualBasicCommandLineArguments parsed = VisualBasicCommandLineParser.Default.Parse(arguments, projectDirectory, sdkDirectory: null);
-                    return (parsed.CompilationOptions, parsed.ParseOptions);
-                }
-
-                return FromVisualBasicCommandLine();
-            }
+            return (commandLine.CompilationOptions, commandLine.ParseOptions);
         }
 
         return (CreateCompilationOptions(analyzerResult, languageName), CreateParseOptions(analyzerResult, languageName));
@@ -433,12 +456,19 @@ public static class AnalyzerResultExtensions
         !string.IsNullOrWhiteSpace(analyzerResult.GetProperty("DocumentationFile"))
         || (bool.TryParse(analyzerResult.GetProperty("GenerateDocumentationFile"), out bool generate) && generate);
 
-    private static IEnumerable<DocumentInfo> GetAnalyzerConfigDocuments(IAnalyzerResult analyzerResult, ProjectId projectId)
+    private static IEnumerable<DocumentInfo> GetAnalyzerConfigDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {
         // The compiler receives these as absolute paths via /analyzerconfig:, including the
         // SDK-generated <Project>.GeneratedMSBuildEditorConfig.editorconfig that surfaces
         // build_property.* values many source generators depend on.
         string[] analyzerConfigFiles = analyzerResult.AnalyzerConfigFiles ?? [];
+
+        // Backfill from the command line's /analyzerconfig: switches when task inputs weren't captured.
+        if (analyzerConfigFiles.Length == 0 && commandLine is not null)
+        {
+            analyzerConfigFiles = [.. commandLine.AnalyzerConfigPaths];
+        }
+
         return GetDocuments(analyzerConfigFiles, projectId, Path.GetDirectoryName(analyzerResult.ProjectFilePath), GetChecksumAlgorithm(analyzerResult));
     }
 
@@ -606,12 +636,21 @@ public static class AnalyzerResultExtensions
         return null;
     }
 
-    private static IEnumerable<DocumentInfo> GetDocuments(IAnalyzerResult analyzerResult, ProjectId projectId)
+    private static IEnumerable<DocumentInfo> GetDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {
         string[] sourceFiles = analyzerResult.SourceFiles ?? [];
 
-        // When MSBuild fails before the compiler runs, CompilerCommand (and so SourceFiles) is empty.
-        // Fall back to the evaluation-time Compile items so the workspace still has documents (issue #341).
+        // When the compiler task's inputs weren't captured (e.g. replaying a binary log that lacks task
+        // parameters) SourceFiles is empty, but the csc/vbc command line - a normal-verbosity message present
+        // in virtually every binary log - still lists the exact, final source set (generated files included).
+        if (sourceFiles.Length == 0 && commandLine is not null)
+        {
+            sourceFiles = [.. commandLine.SourceFiles.Select(f => f.Path)];
+        }
+
+        // Last resort: when neither the task inputs nor a command line were captured (the build failed before
+        // the compiler ran), the evaluation-time Compile items - declaration order, no build-generated
+        // sources - at least give the workspace documents (issue #341).
         if (sourceFiles.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
             sourceFiles = GetItemPaths(analyzerResult, "Compile");
@@ -724,10 +763,16 @@ public static class AnalyzerResultExtensions
             : relativeDirectory.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
     }
 
-    private static IEnumerable<DocumentInfo> GetAdditionalDocuments(IAnalyzerResult analyzerResult, ProjectId projectId)
+    private static IEnumerable<DocumentInfo> GetAdditionalDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {
         string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
         string[] additionalFiles = analyzerResult.AdditionalFiles ?? [];
+
+        // Backfill from the command line's /additionalfile: switches when task inputs weren't captured.
+        if (additionalFiles.Length == 0 && commandLine is not null)
+        {
+            return GetDocuments(commandLine.AdditionalFiles.Select(f => f.Path), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
+        }
 
         // Fall back to the evaluation-time AdditionalFiles items when the compiler never ran (issue #341).
         if (additionalFiles.Length == 0 && ShouldFallBackToItems(analyzerResult))
@@ -738,12 +783,22 @@ public static class AnalyzerResultExtensions
         return GetDocuments(additionalFiles.Select(x => Path.Combine(projectDirectory!, x)), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
     }
 
-    private static IEnumerable<MetadataReference> GetMetadataReferences(IAnalyzerResult analyzerResult)
+    private static IEnumerable<MetadataReference> GetMetadataReferences(IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
     {
         string[] references = analyzerResult.References ?? [];
 
-        // Fall back to the resolved ReferencePath items (captured from ResolveAssemblyReference) when the
-        // compiler never ran, so the recovered workspace can still bind types (issue #341).
+        // Backfill from the command line's /reference: switches - which also carry each reference's alias
+        // and embed-interop metadata - when task inputs weren't captured.
+        if (references.Length == 0 && commandLine is not null)
+        {
+            return commandLine.MetadataReferences
+                .Where(r => File.Exists(r.Reference))
+                .Select(r => MetadataReference.CreateFromFile(r.Reference, r.Properties));
+        }
+
+        // Fall back to the resolved ReferencePath items (captured from ResolveAssemblyReference) when neither
+        // the compiler task inputs nor a command line were captured, so the recovered workspace can still
+        // bind types (issue #341).
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
             references = GetItemPaths(analyzerResult, "ReferencePath");
@@ -756,12 +811,18 @@ public static class AnalyzerResultExtensions
                 embedInteropTypes: analyzerResult.ReferencesEmbeddingInteropTypes.Contains(x))));
     }
 
-    private static IEnumerable<AnalyzerReference> GetAnalyzerReferences(IAnalyzerResult analyzerResult, Workspace workspace)
+    private static IEnumerable<AnalyzerReference> GetAnalyzerReferences(IAnalyzerResult analyzerResult, Workspace workspace, CommandLineArguments? commandLine)
     {
         IAnalyzerAssemblyLoader loader = workspace.Services.GetRequiredService<IAnalyzerService>().GetLoader();
 
         string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
         string[] analyzerReferences = analyzerResult.AnalyzerReferences ?? [];
+
+        // Backfill from the command line's /analyzer: switches when task inputs weren't captured.
+        if (analyzerReferences.Length == 0 && commandLine is not null)
+        {
+            analyzerReferences = [.. commandLine.AnalyzerReferences.Select(a => a.FilePath)];
+        }
 
         // Fall back to the evaluation-time Analyzer items when the compiler never ran (issue #341).
         if (analyzerReferences.Length == 0 && ShouldFallBackToItems(analyzerResult))
