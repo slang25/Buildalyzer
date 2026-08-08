@@ -4,6 +4,8 @@ using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
@@ -690,15 +692,31 @@ public static class AnalyzerResultExtensions
         return GetDocuments(sourceFiles, projectId, Path.GetDirectoryName(analyzerResult.ProjectFilePath), GetChecksumAlgorithm(analyzerResult));
     }
 
+    // Every input path becomes a document, whether or not it exists on disk, matching MSBuildWorkspace.
+    // The text is loaded lazily on first read; a missing file then produces an empty document and a
+    // standard Roslyn document-load failure instead of being silently dropped here (issue #345).
     private static IEnumerable<DocumentInfo> GetDocuments(IEnumerable<string> files, ProjectId projectId, string? projectDirectory, SourceHashAlgorithm checksumAlgorithm) =>
-       files.Where(File.Exists)
-           .Select(x => DocumentInfo.Create(
+       files.Select(x => DocumentInfo.Create(
                DocumentId.CreateNewId(projectId),
                Path.GetFileName(x),
                folders: GetDocumentFolders(x, projectDirectory),
-               loader: TextLoader.From(
-                   TextAndVersion.Create(ReadSourceText(x, checksumAlgorithm), VersionStamp.Create())),
+               loader: new LazyFileTextLoader(x, checksumAlgorithm),
                filePath: x));
+
+    /// <summary>
+    /// Reads a document's text from disk on first access, like MSBuildWorkspace's file loader, instead of
+    /// eagerly at workspace construction. Roslyn turns an <see cref="IOException"/> thrown here into an
+    /// empty document plus a document-load diagnostic, which is exactly how MSBuildWorkspace surfaces a
+    /// source path that does not exist on disk.
+    /// </summary>
+    private sealed class LazyFileTextLoader(string path, SourceHashAlgorithm checksumAlgorithm) : TextLoader
+    {
+        public override Task<TextAndVersion> LoadTextAndVersionAsync(LoadTextOptions options, CancellationToken cancellationToken)
+            => Task.FromResult(TextAndVersion.Create(
+                ReadSourceText(path, checksumAlgorithm),
+                VersionStamp.Create(File.GetLastWriteTimeUtc(path)),
+                path));
+    }
 
     /// <summary>
     /// When MSBuild aborts before the compiler task runs, <c>CompilerCommand</c> is never captured, so the
@@ -861,8 +879,14 @@ public static class AnalyzerResultExtensions
             analyzerReferences = GetItemPaths(analyzerResult, "Analyzer");
         }
 
-        return analyzerReferences.Where(x => File.Exists(Path.GetFullPath(x, projectDirectory!)))
-            .Select(x => new AnalyzerFileReference(Path.GetFullPath(x, projectDirectory!), loader));
+        // A path that is missing on disk (an unbuilt project-private analyzer, say) becomes an
+        // UnresolvedAnalyzerReference rather than being silently dropped, exactly as MSBuildWorkspace
+        // surfaces it via CommandLineArguments.ResolveAnalyzerReferences (issue #345).
+        return analyzerReferences
+            .Select(x => Path.GetFullPath(x, projectDirectory!))
+            .Select(x => File.Exists(x)
+                ? new AnalyzerFileReference(x, loader)
+                : (AnalyzerReference)new UnresolvedAnalyzerReference(x));
     }
 
     private static bool TryGetSupportedLanguageName(string projectPath, out string languageName)

@@ -702,6 +702,61 @@ public class Differential_specs
     }
 
     [Test]
+    public async Task Missing_source_file_still_becomes_a_document()
+    {
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "MissingSourceProject",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Class1.cs", "namespace MissingSourceProject;\npublic class Class1 { }\n"));
+
+        // An explicit Compile item whose file does not exist on disk - the shape of an uninitialised
+        // git submodule (issue #345). The design-time build skips the compiler, so the path flows
+        // through to the workspace without failing the build.
+        ProjectFixture.AddItem(projectPath, "Compile", "Missing.cs");
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        // The missing path is a document on both sides, not silently dropped.
+        comparison.MSBuild.SourceFileNames().Should().Contain("Missing.cs", "the reference keeps missing paths as documents");
+        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
+
+        // The read fails lazily and identically on both sides: an empty document, not an exception.
+        string ba = await DocumentText(comparison.Buildalyzer, "Missing.cs");
+        string ms = await DocumentText(comparison.MSBuild, "Missing.cs");
+        ba.Should().Be(ms);
+        ba.Should().BeEmpty();
+    }
+
+    [Test]
+    public async Task Missing_analyzer_reference_is_surfaced_unresolved()
+    {
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "MissingAnalyzerProject",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Class1.cs", "namespace MissingAnalyzerProject;\npublic class Class1 { }\n"));
+
+        // An analyzer path that does not exist on disk - the shape of a project-private analyzer
+        // whose producing project has not been built yet (issue #345).
+        ProjectFixture.AddItem(projectPath, "Analyzer", Path.Combine("analyzers", "NotBuilt.dll"));
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        // Both loaders surface the missing analyzer as an unresolved reference instead of dropping it.
+        comparison.MSBuild.AnalyzerReferences.OfType<UnresolvedAnalyzerReference>()
+            .Should().NotBeEmpty("the reference surfaces missing analyzers as unresolved");
+        comparison.Buildalyzer.AnalyzerReferences.OfType<UnresolvedAnalyzerReference>()
+            .Should().ContainSingle().Which.Display.Should().Contain("NotBuilt");
+        comparison.Buildalyzer.AnalyzerReferenceNames()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferenceNames());
+    }
+
+    [Test]
     public void Recovers_workspace_when_build_fails_before_compile()
     {
         using ProjectFixture fixture = new();
