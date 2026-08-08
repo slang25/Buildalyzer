@@ -106,6 +106,36 @@ public class MultiTargeting_specs
             .Should().BeEquivalentTo(ReferencedFrameworks(comparison.MSBuild), comparison.BuildalyzerLog);
     }
 
+    /// <summary>
+    /// <c>AppendTargetFrameworkToOutputPath=false</c> makes every framework of a multi-targeted project
+    /// write to the same output path, so an output path is not a project identity. Each framework must
+    /// still become its own Roslyn project, exactly as when the paths differ.
+    /// </summary>
+    [Test]
+    public async Task Frameworks_sharing_an_output_path_are_separate_projects()
+    {
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "SharedOutput",
+            p => p
+                .Property("TargetFrameworks", "netstandard2.0;net8.0")
+                .Property("AppendTargetFrameworkToOutputPath", "false"),
+            Source("Class1.cs", "namespace SharedOutput;\npublic class Class1 { }\n"));
+        fixture.Restore(projectPath);
+
+        using MSBuildWorkspace msbuild = MSBuildWorkspace.Create();
+        await msbuild.OpenProjectAsync(projectPath);
+        string[] reference = TargetFrameworksOf(msbuild.CurrentSolution, projectPath);
+
+        SafeStringWriter log = new();
+        AnalyzerManager manager = new(new AnalyzerManagerOptions { LogWriter = log });
+        using AdhocWorkspace buildalyzer = manager.GetProject(projectPath).GetWorkspace();
+        string[] actual = TargetFrameworksOf(buildalyzer.CurrentSolution, projectPath);
+
+        reference.Should().BeEquivalentTo("net8.0", "netstandard2.0");
+        actual.Should().BeEquivalentTo(reference, log.ToString());
+    }
+
     /// <summary>The evaluated target frameworks of a project, read from the per-TFM project names in a solution.</summary>
     private static string[] TargetFrameworksOf(Solution solution, string projectPath) =>
     [

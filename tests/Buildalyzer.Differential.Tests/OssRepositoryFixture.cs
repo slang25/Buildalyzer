@@ -117,8 +117,17 @@ public sealed class OssRepositoryFixture : IDisposable
 
         using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException($"Could not start '{fileName}'.");
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
+
+        // Drain both pipes concurrently (via the data-received events) rather than reading one to EOF and
+        // then the other: a chatty child - a failing clone or restore writes plenty on both - fills the
+        // pipe nobody is reading and blocks forever, while the parent blocks waiting for EOF on the other.
+        // WaitForExit() without a timeout also waits for both readers to reach end of stream.
+        System.Text.StringBuilder output = new();
+        System.Text.StringBuilder error = new();
+        process.OutputDataReceived += (_, e) => output.AppendLine(e.Data);
+        process.ErrorDataReceived += (_, e) => error.AppendLine(e.Data);
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
         process.WaitForExit();
 
         if (process.ExitCode != 0)

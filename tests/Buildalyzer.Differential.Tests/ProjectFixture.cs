@@ -85,17 +85,37 @@ public sealed class ProjectFixture : IDisposable
         startInfo.Environment.Remove("MSBuildExtensionsPath");
         startInfo.Environment.Remove("MSBuildSDKsPath");
 
-        using Process process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Could not start 'dotnet restore'.");
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
+        (int exitCode, string output, string error) = Run(startInfo, "dotnet restore");
+        if (exitCode != 0)
         {
             throw new InvalidOperationException(
-                $"'dotnet restore' failed for {projectPath} (exit {process.ExitCode}):{System.Environment.NewLine}{output}{System.Environment.NewLine}{error}");
+                $"'dotnet restore' failed for {projectPath} (exit {exitCode}):{System.Environment.NewLine}{output}{System.Environment.NewLine}{error}");
         }
+    }
+
+    /// <summary>
+    /// Starts a process and returns its exit code and captured output.
+    /// </summary>
+    /// <remarks>
+    /// Both redirected pipes are drained concurrently (via the data-received events) rather than read to
+    /// EOF one after the other: a child that fills the pipe nobody is reading blocks forever, and the
+    /// parent blocks waiting for EOF on the other. <see cref="Process.WaitForExit()"/> without a timeout
+    /// also waits for both readers to reach end of stream, so the captured text is complete.
+    /// </remarks>
+    private static (int ExitCode, string Output, string Error) Run(ProcessStartInfo startInfo, string description)
+    {
+        using Process process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Could not start '{description}'.");
+
+        System.Text.StringBuilder output = new();
+        System.Text.StringBuilder error = new();
+        process.OutputDataReceived += (_, e) => output.AppendLine(e.Data);
+        process.ErrorDataReceived += (_, e) => error.AppendLine(e.Data);
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        process.WaitForExit();
+
+        return (process.ExitCode, output.ToString(), error.ToString());
     }
 
     /// <summary>Adds an MSBuild item to an already-authored project.</summary>

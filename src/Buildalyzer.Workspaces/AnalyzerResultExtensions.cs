@@ -84,12 +84,11 @@ public static class AnalyzerResultExtensions
             return [];
         }
 
-        // One Roslyn project per succeeded target framework. The empty-framework outer aggregate a
-        // multi-targeted build produces is never succeeded, so it is filtered out here. Results are
-        // reused from the pre-built cache when the caller built projects in parallel up front.
+        // One Roslyn project per target framework. Results are reused from the pre-built cache when the
+        // caller built projects in parallel up front.
         IAnalyzerResult[] results = prebuilt is not null && prebuilt.TryGetValue(projectPath, out IAnalyzerResult[] cached)
             ? cached
-            : [.. analyzer.Build().Where(r => r.Succeeded)];
+            : WorkspaceResults(analyzer.Build());
 
         // Post-order: add the projects this one references before it, so their outputs are present to
         // wire against and every project reference resolves in a single forward pass.
@@ -175,9 +174,33 @@ public static class AnalyzerResultExtensions
         // wave while an up-front restore only adds a serial process.
         return closure.Values
             .AsParallel()
-            .Select(a => (Path: NormalizePath(a.ProjectFile.Path), Results: a.Build().Where(r => r.Succeeded).ToArray()))
+            .Select(a => (Path: NormalizePath(a.ProjectFile.Path), Results: WorkspaceResults(a.Build())))
             .ToList()
             .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
+    }
+
+    /// <summary>
+    /// The per-framework results to model as Roslyn projects.
+    /// </summary>
+    /// <remarks>
+    /// A <em>failed</em> result is deliberately kept: when MSBuild aborts before the compiler task runs the
+    /// project still evaluated its <c>Compile</c> items and resolved its references, and the workspace is
+    /// reconstructed from those (see <see cref="ShouldFallBackToItems"/> and issue #341). Dropping failed
+    /// results here would leave that recovery unreachable from <c>IProjectAnalyzer.GetWorkspace()</c> and
+    /// <c>IAnalyzerManager.GetWorkspace()</c>.
+    /// <para>
+    /// Only the empty-framework outer evaluation of a multi-targeted build is dropped, and only when
+    /// per-framework results exist alongside it: it compiles nothing itself and would otherwise duplicate
+    /// the project under a bare name. When it is the only result (an evaluation-only or early-failure
+    /// build) it is kept, since it is all the caller has.
+    /// </para>
+    /// </remarks>
+    internal static IAnalyzerResult[] WorkspaceResults(IAnalyzerResults results)
+    {
+        IAnalyzerResult[] all = [.. results];
+        return all.Any(r => !string.IsNullOrEmpty(r.TargetFramework))
+            ? [.. all.Where(r => !string.IsNullOrEmpty(r.TargetFramework))]
+            : all;
     }
 
     private static IReadOnlyList<IProjectAnalyzer> ResolveReferencedRoots(IAnalyzerManager manager, IEnumerable<string> projectReferences)
@@ -201,7 +224,7 @@ public static class AnalyzerResultExtensions
 
     // Adds a single target-framework result as its own Roslyn project and wires its project references by
     // resolved output-assembly path. Returns null when the language is unsupported, or the id of the
-    // existing project when the same output has already been added (idempotent).
+    // existing project when the same (project file, project name) has already been added (idempotent).
     private static ProjectId? AddResult(IAnalyzerResult analyzerResult, Workspace workspace, bool addDiscriminator)
     {
         if (!TryGetSupportedLanguageName(analyzerResult.ProjectFilePath, out string languageName))
@@ -209,8 +232,9 @@ public static class AnalyzerResultExtensions
             return null;
         }
 
-        // Idempotent: two results with the same output assembly are the same (project, framework).
-        if (FindProjectByOutput(workspace.CurrentSolution, analyzerResult.GetProperty("TargetPath")) is { } existingId)
+        // Idempotent: the same (project file, project name) is the same (project, framework).
+        string projectName = ProjectName(analyzerResult, addDiscriminator);
+        if (FindProject(workspace.CurrentSolution, analyzerResult.ProjectFilePath, projectName) is { } existingId)
         {
             return existingId;
         }
@@ -224,7 +248,7 @@ public static class AnalyzerResultExtensions
 
         ProjectId projectId = ProjectId.CreateNewId();
         Microsoft.CodeAnalysis.ProjectInfo projectInfo = GetProjectInfo(
-            analyzerResult, workspace, projectId, ProjectName(analyzerResult, addDiscriminator), languageName, projectDirectory, commandLine);
+            analyzerResult, workspace, projectId, projectName, languageName, projectDirectory, commandLine);
         if (projectInfo is null)
         {
             return null;
@@ -288,17 +312,24 @@ public static class AnalyzerResultExtensions
         return index;
     }
 
-    private static ProjectId? FindProjectByOutput(Solution solution, string? outputPath)
+    // Locates an already-added Roslyn project by its identity: the project file it came from plus its name,
+    // which carries the "(tfm)" discriminator for a multi-targeted project. Output paths are NOT an identity
+    // - unrelated projects can share a TargetPath, and a multi-targeted project that sets
+    // AppendTargetFrameworkToOutputPath=false has one output path for all of its frameworks - so they are
+    // used only for wiring project references (see WireProjectReferences).
+    private static ProjectId? FindProject(Solution solution, string? projectFilePath, string projectName)
     {
-        if (string.IsNullOrEmpty(outputPath))
+        if (string.IsNullOrEmpty(projectFilePath))
         {
             return null;
         }
 
-        string normalized = NormalizePath(outputPath);
+        string normalized = NormalizePath(projectFilePath);
         foreach (Project project in solution.Projects)
         {
-            if (project.OutputFilePath is { } path && NormalizePath(path).Equals(normalized, IOPath.Comparison))
+            if (project.FilePath is { } path
+                && NormalizePath(path).Equals(normalized, IOPath.Comparison)
+                && string.Equals(project.Name, projectName, StringComparison.Ordinal))
             {
                 return project.Id;
             }

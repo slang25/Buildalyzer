@@ -717,7 +717,8 @@ public class Differential_specs
 
         SafeStringWriter log = new();
         AnalyzerManager manager = new(new AnalyzerManagerOptions { LogWriter = log });
-        IAnalyzerResult result = manager.GetProject(projectPath).Build().First();
+        IProjectAnalyzer analyzer = manager.GetProject(projectPath);
+        IAnalyzerResult result = analyzer.Build().First();
 
         // The build failed before the compiler ran, so CompilerCommand was never captured.
         result.Succeeded.Should().BeFalse(log.ToString());
@@ -731,6 +732,16 @@ public class Differential_specs
         project.SourceFileNames().Should().Contain("Class1.cs", log.ToString());
         project.MetadataReferenceNames().Should().Contain("System.Runtime.dll", log.ToString());
         project.PreprocessorSymbols().Should().Contain("CUSTOM_CONSTANT", log.ToString());
+
+        // The same recovery has to be reachable from the analyzer- and manager-level entry points, which
+        // build the project themselves rather than being handed a result.
+        using AdhocWorkspace fromAnalyzer = analyzer.GetWorkspace();
+        Project analyzerProject = fromAnalyzer.CurrentSolution.Projects.Single();
+        analyzerProject.SourceFileNames().Should().Contain("Class1.cs", log.ToString());
+
+        using AdhocWorkspace fromManager = manager.GetWorkspace();
+        Project managerProject = fromManager.CurrentSolution.Projects.Single();
+        managerProject.SourceFileNames().Should().Contain("Class1.cs", log.ToString());
     }
 
     [Test]

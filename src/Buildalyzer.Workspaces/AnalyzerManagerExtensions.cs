@@ -52,7 +52,7 @@ public static class AnalyzerManagerExtensions
         // thread-safe). AddAnalyzer reuses these results instead of rebuilding.
         IReadOnlyDictionary<string, IAnalyzerResult[]> prebuilt = manager.Projects.Values
             .AsParallel()
-            .Select(p => (Path: AnalyzerResultExtensions.NormalizePath(p.ProjectFile.Path), Results: p.Build().Where(r => r.Succeeded).ToArray()))
+            .Select(p => (Path: AnalyzerResultExtensions.NormalizePath(p.ProjectFile.Path), Results: AnalyzerResultExtensions.WorkspaceResults(p.Build())))
             .ToList()
             .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
 
