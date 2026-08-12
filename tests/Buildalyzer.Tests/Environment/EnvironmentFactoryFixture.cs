@@ -51,6 +51,13 @@ public class EnvironmentFactoryFixture
     [TestCase("net6.0-tvos", false)]
     [TestCase("net6.0-watchos", false)]
     [TestCase("net6.0-windows", false)]
+
+    // Dotted double-digit majors. Note these collide with the packed .NET Framework monikers
+    // below ("net10" is Framework 1.0, "net10.0" is .NET 10), so the dot matters.
+    [TestCase("net10.0", false)]
+    [TestCase("net10.0-windows", false)]
+    [TestCase("net11.0", false)]
+    [TestCase("net11.0-windows", false)]
     [TestCase("netstandard1.0", false)]
     [TestCase("netstandard1.1", false)]
     [TestCase("netstandard1.2", false)]
@@ -62,6 +69,7 @@ public class EnvironmentFactoryFixture
     [TestCase("netstandard2.1", false)]
 
     // .NET Framework
+    [TestCase("net10", true)]
     [TestCase("net11", true)]
     [TestCase("net20", true)]
     [TestCase("net35", true)]
