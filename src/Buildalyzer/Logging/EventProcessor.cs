@@ -14,7 +14,6 @@ namespace Buildalyzer.Logging;
 internal sealed class EventProcessor : IDisposable
 {
     private readonly Dictionary<string, AnalyzerResult> _results = [];
-    private readonly Stack<AnalyzerResult> _currentResult = new();
     private readonly Dictionary<int, PropertiesAndItems> _evaluationResults = [];
     private readonly AnalyzerManager _manager;
     private readonly ProjectAnalyzer _analyzer;
@@ -24,10 +23,16 @@ internal sealed class EventProcessor : IDisposable
     private PipeEventDispatcher? _pipeSource;
     private IOPath _projectFilePath;
 
-    // The project-context ids of the primary project's builds (one per inner build when multi-targeting).
-    // Used to attribute compiler task-input events to the primary result and reject those raised by
-    // referenced projects that are compiled in the same MSBuild invocation.
-    private readonly HashSet<int> _primaryProjectContextIds = [];
+    // The result each of the primary project's build contexts is building into (one context per inner build
+    // when multi-targeting), and by the same token the set of contexts that belong to the primary project at
+    // all. A single "current result" stack would be wrong for the same reason a global target stack is:
+    // MSBuild interleaves events from different build contexts whenever more than one project builds at a
+    // time (/m, and any binary log recorded from such a build), and a multi-targeted project's inner builds
+    // are exactly that. A project that starts last can finish first, so stack position says nothing about
+    // which result an event belongs to - it would hand one framework's success flag, command line and
+    // compiler inputs to another. Every event is resolved through the context it actually came from instead,
+    // which also rejects the events raised by referenced projects compiled in the same MSBuild invocation.
+    private readonly Dictionary<int, AnalyzerResult?> _resultsByContext = [];
 
     // The project-context ids that are currently executing CoreCompile. A single global target stack would be
     // wrong here: MSBuild interleaves target events from different build contexts whenever more than one
@@ -75,7 +80,7 @@ internal sealed class EventProcessor : IDisposable
     private void OnEvaluationFinished(int evaluationId, PropertiesAndItems propertiesAndItems)
         => _evaluationResults[evaluationId] = propertiesAndItems;
 
-    private void OnProjectStarted(string? projectFile, PropertiesAndItems? propertiesAndItems, int? projectContextId)
+    private void OnProjectStarted(string? projectFile, PropertiesAndItems? propertiesAndItems, int contextId, int? parentContextId)
     {
         var projectPath = IOPath.Parse(projectFile).Root();
 
@@ -91,21 +96,17 @@ internal sealed class EventProcessor : IDisposable
             // WPF's full Build compiles the primary project's real source set - including the
             // markup-generated GeneratedInternalTypeHelper.g.cs - inside a sibling "*_wpftmp" project
             // spun up by GenerateTemporaryTargetAssembly. That temp build has its own project-context id,
-            // so register it as primary; otherwise OnPipeTaskParameter rejects its CoreCompile inputs and
-            // the primary result is left with no source files.
-            if (projectContextId is { } tempContextId && IsPrimaryMarkupCompilation(projectPath))
+            // so point it at the result of the build that spawned it (the MSBuild task runs it from inside
+            // the primary project's build); otherwise its CoreCompile inputs are rejected as another
+            // project's and the primary result is left with no source files.
+            if (IsPrimaryMarkupCompilation(projectPath)
+                && parentContextId is { } parentId
+                && _resultsByContext.TryGetValue(parentId, out AnalyzerResult? spawningResult))
             {
-                _primaryProjectContextIds.Add(tempContextId);
+                _resultsByContext[contextId] = spawningResult;
             }
 
             return;
-        }
-
-        // Remember this project build's context so its compiler task-input events can be told apart from
-        // those raised by referenced projects that build in the same invocation (see OnPipeTaskParameter).
-        if (projectContextId is { } contextId)
-        {
-            _primaryProjectContextIds.Add(contextId);
         }
 
         string tfm = propertiesAndItems?.Properties.TryGet("TargetFrameworkMoniker")?.StringValue ?? string.Empty;
@@ -119,12 +120,17 @@ internal sealed class EventProcessor : IDisposable
             }
 
             result.ProcessProject(propertiesAndItems);
-            _currentResult.Push(result);
+
+            // Remember which result this project build's context feeds, so its events can be told apart from
+            // those raised by any other project - or inner build - running at the same time.
+            _resultsByContext[contextId] = result;
             return;
         }
 
-        // Push a null result so the stack stays balanced on project finish.
-        _currentResult.Push(null);
+        // The primary project, but without the evaluation data needed to build a result from it. Record the
+        // context anyway so its later events are recognised as the primary project's and skipped, rather
+        // than falling through to whichever result happens to be around.
+        _resultsByContext[contextId] = null;
     }
 
     // WPF markup compilation compiles the primary project under a generated "<name>_<hash>_wpftmp" project
@@ -145,11 +151,14 @@ internal sealed class EventProcessor : IDisposable
             && name.StartsWith(Path.GetFileNameWithoutExtension(primary.Name) + "_", comparison);
     }
 
-    private void OnProjectFinished(string? projectFile, bool succeeded)
+    private void OnProjectFinished(string? projectFile, bool succeeded, int contextId)
     {
-        if (IOPath.Parse(projectFile).Root().Equals(_projectFilePath))
+        // Resolved through this build's own context rather than by finish order: inner builds of a
+        // multi-targeted project do not finish in the order they started, so the last result to start is not
+        // the one this finish belongs to.
+        if (IOPath.Parse(projectFile).Root().Equals(_projectFilePath)
+            && _resultsByContext.TryGetValue(contextId, out AnalyzerResult? result))
         {
-            AnalyzerResult result = _currentResult.Pop();
             result?.Succeeded = succeeded;
         }
     }
@@ -172,7 +181,9 @@ internal sealed class EventProcessor : IDisposable
 
     private void OnMessage(string? senderName, string? message, string? projectFile, string? commandLineTaskName, string? commandLine, int contextId)
     {
-        if (!_currentResult.TryPeek(out var result) || !IsRelevant())
+        // Only the primary project's own build contexts have a result; a referenced project compiled in the
+        // same invocation raises its own Csc/Fsc messages and must not write to it.
+        if (!_resultsByContext.TryGetValue(contextId, out AnalyzerResult? result) || result is null || !IsRelevant())
         {
             return;
         }
@@ -230,22 +241,21 @@ internal sealed class EventProcessor : IDisposable
                 ? existing
                 : null;
 
-        OnProjectStarted(e.ProjectFile, propertiesAndItems, e.BuildEventContext?.ProjectContextId);
+        OnProjectStarted(e.ProjectFile, propertiesAndItems, ProjectContextId(e), e.ParentProjectBuildEventContext?.ProjectContextId);
     }
 
-    private void OnPipeProjectFinished(PipeProjectFinishedEventArgs e) => OnProjectFinished(e.ProjectFile, e.Succeeded);
+    private void OnPipeProjectFinished(PipeProjectFinishedEventArgs e) => OnProjectFinished(e.ProjectFile, e.Succeeded, ProjectContextId(e));
 
     // Collect the compiler task's resolved input parameters (structured items with metadata). For live builds
     // the logger has already filtered to CoreCompile's compiler-input item groups; for a replayed binary log
     // every task parameter is forwarded, so we gate on TaskInput kind, item type, and the CoreCompile target.
-    // The event must also originate from the primary project's build context: referenced projects compiled in
-    // the same invocation raise their own compiler-input events (the logger's CoreCompile filter is project-
+    // The event's own build context both admits it and picks the result it feeds: referenced projects compiled
+    // in the same invocation raise their own compiler-input events (the logger's CoreCompile filter is project-
     // agnostic), and without this check their Sources/References would be merged into the primary result.
     private void OnPipeTaskParameter(PipeTaskParameterEventArgs e)
     {
         if (e.BuildEventContext is not { } context
-            || !_primaryProjectContextIds.Contains(context.ProjectContextId)
-            || !_currentResult.TryPeek(out var result)
+            || !_resultsByContext.TryGetValue(context.ProjectContextId, out AnalyzerResult? result)
             || result is null)
         {
             return;
