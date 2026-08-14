@@ -88,6 +88,14 @@ public class EnvironmentFactory
         additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBuildSDKsPath, Path.Combine(dotnetPath, "Sdks"));
         additionalEnvironmentVariables.TryAdd(EnvironmentVariables.COREHOST_TRACE, "0");
 
+        // A host that has registered MSBuildLocator sets MSBUILD_EXE_PATH process-wide to its own
+        // in-process MSBuild. The extension/SDK paths above are already re-pointed at the resolved SDK;
+        // also unset MSBUILD_EXE_PATH (a null value unsets it in the child process, see ProcessRunner)
+        // so the build and the worker nodes it spawns resolve MSBuild from the SDK rather than from
+        // whatever the host loaded, mirroring what AnalyzerManager.Analyze does for binlog replay.
+        // TryAdd keeps an explicit value from EnvironmentOptions.EnvironmentVariables intact.
+        additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBUILD_EXE_PATH, null!);
+
         // Have MSBuild generate task-input parameter events so the compiler task's resolved Sources/References
         // are available as structured items. The BuildalyzerLogger opts into their delivery via
         // IEventSource4.IncludeTaskInputs() (no diagnostic verbosity needed) and forwards only the compiler's
@@ -141,6 +149,14 @@ public class EnvironmentFactory
         // input item groups. MSBuild reads this variable through Traits at node startup, so node reuse is off.
         additionalEnvironmentVariables.TryAdd("MSBUILDLOGTASKINPUTS", "1");
         additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBUILDDISABLENODEREUSE, "1");
+
+        // Unset the MSBuild discovery variables a MSBuildLocator-registered host leaks into the
+        // environment (a null value unsets them in the child, see ProcessRunner): they point at the
+        // host's - typically .NET Core - MSBuild and would misdirect MSBuild.exe's toolset resolution.
+        // TryAdd keeps explicit values from EnvironmentOptions.EnvironmentVariables intact.
+        additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBUILD_EXE_PATH, null!);
+        additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBuildExtensionsPath, null!);
+        additionalEnvironmentVariables.TryAdd(EnvironmentVariables.MSBuildSDKsPath, null!);
 
         return new BuildEnvironment(
             options.DesignTime,

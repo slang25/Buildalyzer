@@ -1,5 +1,3 @@
-using System.IO;
-
 namespace Buildalyzer.Environment;
 
 /// <summary>
@@ -81,10 +79,12 @@ public sealed class BuildEnvironment
         Arguments = Guard.NotNull(arguments);
         WorkingDirectory = workingDirectory;
 
-        // Check if we've already specified a path to MSBuild
-        string? envMsBuildExePath = System.Environment.GetEnvironmentVariable(Environment.EnvironmentVariables.MSBUILD_EXE_PATH);
-        MsBuildExePath = !string.IsNullOrEmpty(envMsBuildExePath) && File.Exists(envMsBuildExePath)
-            ? envMsBuildExePath : msBuildExePath;
+        // The resolved path is authoritative; deliberately do NOT let the process-level MSBUILD_EXE_PATH
+        // override it. A host that has registered MSBuildLocator sets that variable to its own in-process
+        // MSBuild, which would silently redirect every build away from the SDK the analyzed project
+        // resolves to - the exact version coupling building out-of-process is meant to remove. An explicit
+        // override goes through EnvironmentOptions.EnvironmentVariables, which EnvironmentFactory honors.
+        MsBuildExePath = msBuildExePath;
         if (string.IsNullOrWhiteSpace(MsBuildExePath) && string.IsNullOrWhiteSpace(dotnetExePath))
         {
             throw new ArgumentNullException(nameof(msBuildExePath));
