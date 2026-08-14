@@ -71,7 +71,11 @@ public class AnalyzerManager : IAnalyzerManager
         EnvironmentVariables[key] = value;
     }
 
-    public IProjectAnalyzer? GetProject(string projectFilePath) => GetProject(IOPath.Parse(projectFilePath), null);
+    // Rooted here, at the public boundary: the analyzers are keyed by path, and every other way a project
+    // enters the manager (a solution's ProjectInfo, a resolved project reference) supplies a full path. A
+    // caller passing "src/Foo/Foo.csproj" must reach the same analyzer as one passing its absolute path,
+    // not silently get a second one.
+    public IProjectAnalyzer? GetProject(string projectFilePath) => GetProject(IOPath.Parse(projectFilePath).Root(), null);
 
     /// <inheritdoc/>
     public IAnalyzerResults Analyze(string binLogPath)
@@ -112,7 +116,17 @@ public class AnalyzerManager : IAnalyzerManager
             "dotnet",
             arguments,
             file.DirectoryName ?? System.Environment.CurrentDirectory,
-            new Dictionary<string, string?>(),
+            // Unset the MSBuild discovery variables rather than let the child inherit them - the dotnet
+            // muxer does not override them, so whatever the host had wins. A consumer that has registered
+            // MSBuildLocator has them pointing at its own in-process MSBuild, which would aim this replay at
+            // a different MSBuild than the muxer resolves: mismatched assemblies and SDK paths, the very
+            // thing replaying out-of-process is meant to rule out. A null value means "unset".
+            new Dictionary<string, string?>
+            {
+                [Environment.EnvironmentVariables.MSBUILD_EXE_PATH] = null,
+                [Environment.EnvironmentVariables.MSBuildExtensionsPath] = null,
+                [Environment.EnvironmentVariables.MSBuildSDKsPath] = null,
+            },
             LoggerFactory);
 
         // If MSBuild exits without ever writing to the pipe (e.g. an invalid binary log or a startup

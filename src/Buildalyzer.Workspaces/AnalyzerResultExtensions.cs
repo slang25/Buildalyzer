@@ -281,11 +281,18 @@ public static class AnalyzerResultExtensions
         }
 
         HashSet<ProjectId> referenced = [];
-        foreach (string reference in GetReferencePaths(analyzerResult, commandLine))
+        foreach (var reference in GetReferencePaths(analyzerResult, commandLine))
         {
-            if (outputToProject.TryGetValue(NormalizePath(reference), out ProjectId targetId) && referenced.Add(targetId))
+            if (outputToProject.TryGetValue(NormalizePath(reference.Reference), out ProjectId targetId) && referenced.Add(targetId))
             {
-                solution = solution.AddProjectReference(projectId, new ProjectReference(targetId));
+                // Carry the aliases and embed-interop flag over to the project reference. Turning a
+                // resolved assembly reference into a project reference must not change what the compiler
+                // sees: an `extern alias`ed dependency is not in the global namespace, and an embedded
+                // interop reference contributes types rather than a reference. Dropping them here would
+                // make the workspace compile differently from the build it came from.
+                solution = solution.AddProjectReference(
+                    projectId,
+                    new ProjectReference(targetId, reference.Aliases, reference.EmbedInteropTypes));
             }
         }
 
@@ -340,18 +347,23 @@ public static class AnalyzerResultExtensions
         return null;
     }
 
-    // The resolved reference paths used for output-path correlation. Unlike GetMetadataReferences these
-    // are NOT filtered by File.Exists: a project reference resolves to a dependency's output that a
-    // design-time build never writes to disk, and that (nonexistent) path is exactly what we match on.
-    private static IEnumerable<string> GetReferencePaths(IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
+    // The resolved reference paths used for output-path correlation, each with the aliases and embed-interop
+    // flag the compiler was given for it. Unlike GetMetadataReferences these are NOT filtered by File.Exists:
+    // a project reference resolves to a dependency's output that a design-time build never writes to disk,
+    // and that (nonexistent) path is exactly what we match on.
+    private static IEnumerable<(string Reference, ImmutableArray<string> Aliases, bool EmbedInteropTypes)> GetReferencePaths(
+        IAnalyzerResult analyzerResult,
+        CommandLineArguments? commandLine)
     {
         string[] references = analyzerResult.References ?? [];
 
         // The command line's /reference: switches list the same resolved assembly paths (project outputs
-        // included), so they correlate to project references too when task inputs weren't captured.
+        // included), so they correlate to project references too when task inputs weren't captured. The
+        // switch carries its own alias and embed-interop metadata.
         if (references.Length == 0 && commandLine is not null)
         {
-            references = [.. commandLine.MetadataReferences.Select(r => r.Reference)];
+            return commandLine.MetadataReferences
+                .Select(r => (r.Reference, r.Properties.Aliases, r.Properties.EmbedInteropTypes));
         }
 
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
@@ -359,7 +371,10 @@ public static class AnalyzerResultExtensions
             references = GetItemPaths(analyzerResult, "ReferencePath");
         }
 
-        return references;
+        return references.Select(reference => (
+            Reference: reference,
+            Aliases: analyzerResult.ReferenceAliases.GetValueOrDefault(reference),
+            EmbedInteropTypes: analyzerResult.ReferencesEmbeddingInteropTypes.Contains(reference)));
     }
 
     private static string ProjectName(IAnalyzerResult analyzerResult, bool addDiscriminator)

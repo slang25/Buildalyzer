@@ -249,6 +249,28 @@ public class ProjectAnalyzerExtensionsFixture
         diagnostics.Should().BeEmpty();
     }
 
+    [Test(Description = "A project reference resolved from an aliased assembly reference keeps its alias")]
+    public async Task SupportsProjectReferenceAliases()
+    {
+        // Given
+        SafeStringWriter log = new SafeStringWriter();
+        IProjectAnalyzer analyzer = GetProjectAnalyzer(
+            @"projects\AliasedProjectReference\AliasedConsumer\AliasedConsumer.csproj", log);
+
+        // When
+        using var workspace = analyzer.GetWorkspace(addProjectReferences: true);
+        Project project = workspace.CurrentSolution.Projects.Single(p => p.Name == "AliasedConsumer");
+
+        // Then - the consumer reaches Widget only through "Lib::", so losing the alias when the assembly
+        // reference is turned into a project reference surfaces as CS0430 on the extern alias.
+        project.ProjectReferences.Single().Aliases.Should().BeEquivalentTo(["Lib"]);
+
+        Compilation compilation = await project.GetCompilationAsync();
+        compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Should().BeEmpty(log.ToString());
+    }
+
 #if Is_Windows
     [Test]
     public void HandlesWpfCustomControlLibrary()
