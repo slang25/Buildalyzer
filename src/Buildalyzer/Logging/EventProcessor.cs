@@ -15,7 +15,6 @@ internal sealed class EventProcessor : IDisposable
 {
     private readonly Dictionary<string, AnalyzerResult> _results = [];
     private readonly Stack<AnalyzerResult> _currentResult = new();
-    private readonly Stack<string> _targetStack = new();
     private readonly Dictionary<int, PropertiesAndItems> _evaluationResults = [];
     private readonly AnalyzerManager _manager;
     private readonly ProjectAnalyzer _analyzer;
@@ -29,6 +28,15 @@ internal sealed class EventProcessor : IDisposable
     // Used to attribute compiler task-input events to the primary result and reject those raised by
     // referenced projects that are compiled in the same MSBuild invocation.
     private readonly HashSet<int> _primaryProjectContextIds = [];
+
+    // The project-context ids that are currently executing CoreCompile. A single global target stack would be
+    // wrong here: MSBuild interleaves target events from different build contexts whenever more than one
+    // project builds at a time (/m, and any binary log recorded from such a build), so one project's
+    // TargetFinished can arrive while another's target is still open. That both mis-attributes compiler task
+    // inputs to the wrong CoreCompile and pops a target that never matches the one being finished. Targets do
+    // not nest within a single project context, so tracking the contexts that are inside CoreCompile is
+    // enough, and every event is then judged against the context it actually came from.
+    private readonly HashSet<int> _coreCompileContexts = [];
 
     public EventProcessor(AnalyzerManager manager, ProjectAnalyzer analyzer, bool analyze)
     {
@@ -146,27 +154,35 @@ internal sealed class EventProcessor : IDisposable
         }
     }
 
-    private void OnTargetStarted(string? targetName) => _targetStack.Push(targetName ?? string.Empty);
-
-    private void OnTargetFinished(string? targetName)
+    private void OnTargetStarted(string? targetName, int contextId)
     {
-        if (_targetStack.Pop() != (targetName ?? string.Empty))
+        if (targetName == "CoreCompile")
         {
-            throw new InvalidOperationException("Mismatched target events");
+            _coreCompileContexts.Add(contextId);
         }
     }
 
-    private void OnMessage(string? senderName, string? message, string? projectFile, string? commandLineTaskName, string? commandLine)
+    private void OnTargetFinished(string? targetName, int contextId)
+    {
+        if (targetName == "CoreCompile")
+        {
+            _coreCompileContexts.Remove(contextId);
+        }
+    }
+
+    private void OnMessage(string? senderName, string? message, string? projectFile, string? commandLineTaskName, string? commandLine, int contextId)
     {
         if (!_currentResult.TryPeek(out var result) || !IsRelevant())
         {
             return;
         }
 
+        bool coreCompile = _coreCompileContexts.Contains(contextId);
+
         // F# writes its command line as an Fsc message rather than a task-command-line event.
         if (senderName.IsMatch("Fsc")
             && !string.IsNullOrWhiteSpace(message)
-            && _targetStack.Any(x => x == "CoreCompile")
+            && coreCompile
             && !result.HasCommandLine)
         {
             result.ProcessFscCommandLine(message);
@@ -174,7 +190,7 @@ internal sealed class EventProcessor : IDisposable
 
         if (commandLineTaskName.IsMatch("Csc"))
         {
-            result.ProcessCscCommandLine(commandLine, _targetStack.Any(x => x == "CoreCompile"));
+            result.ProcessCscCommandLine(commandLine, coreCompile);
         }
         else if (commandLineTaskName.IsMatch("Vbc"))
         {
@@ -235,11 +251,13 @@ internal sealed class EventProcessor : IDisposable
             return;
         }
 
-        // The compiler task's resolved inputs (Sources/References/...), captured inside CoreCompile.
+        // The compiler task's resolved inputs (Sources/References/...), captured inside CoreCompile. The
+        // CoreCompile lookup is scoped to this event's own project context so a concurrently building
+        // project's CoreCompile can neither vouch for nor disqualify these inputs.
         if (e.Kind == PipeTaskParameterKind.TaskInput
             && e.ItemType is { Length: > 0 } itemType
             && IsCompilerInput(itemType)
-            && _targetStack.Any(x => x == "CoreCompile"))
+            && _coreCompileContexts.Contains(context.ProjectContextId))
         {
             result.AddTaskParameterInput(itemType, e.Items.Select(ToInputItem));
         }
@@ -260,15 +278,20 @@ internal sealed class EventProcessor : IDisposable
     private static bool IsCompilerInput(string itemType) => itemType is
         "Sources" or "References" or "Analyzers" or "AdditionalFiles" or "AnalyzerConfigFiles" or "EmbeddedFiles";
 
-    private void OnPipeTargetStarted(PipeTargetStartedEventArgs e) => OnTargetStarted(e.TargetName);
+    private void OnPipeTargetStarted(PipeTargetStartedEventArgs e) => OnTargetStarted(e.TargetName, ProjectContextId(e));
 
-    private void OnPipeTargetFinished(PipeTargetFinishedEventArgs e) => OnTargetFinished(e.TargetName);
+    private void OnPipeTargetFinished(PipeTargetFinishedEventArgs e) => OnTargetFinished(e.TargetName, ProjectContextId(e));
 
     private void OnPipeMessage(PipeBuildMessageEventArgs e)
     {
         var commandLine = e as PipeTaskCommandLineEventArgs;
-        OnMessage(e.SenderName, e.Message, e.ProjectFile, commandLine?.TaskName, commandLine?.CommandLine);
+        OnMessage(e.SenderName, e.Message, e.ProjectFile, commandLine?.TaskName, commandLine?.CommandLine, ProjectContextId(e));
     }
+
+    // Events without a build context are grouped under a single sentinel id rather than dropped, so a logger
+    // that omits the context still pairs its target and task events with each other.
+    private static int ProjectContextId(PipeBuildEventArgs e)
+        => e.BuildEventContext is { } context ? context.ProjectContextId : int.MinValue;
 
     private void OnPipeBuildFinished(PipeBuildFinishedEventArgs e) => OnBuildFinished(e.Succeeded);
 

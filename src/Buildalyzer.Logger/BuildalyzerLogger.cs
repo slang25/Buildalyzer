@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Build.Framework;
 using XenoAtom.MsBuildPipeLogger;
@@ -91,7 +92,7 @@ public class BuildalyzerLogger : PipeLogger
         // Forward the compiler task's resolved inputs (captured inside CoreCompile) and the references
         // that ResolveAssemblyReference resolved before it - the latter so the workspace can still be
         // reconstructed when the build fails before CoreCompile runs (issue #341).
-        bool compilerInput = _inCoreCompile
+        bool compilerInput = _coreCompileContexts.Contains(ProjectContextId(parameter))
             && parameter.Kind == TaskParameterMessageKind.TaskInput
             && IsCompilerInput(parameter.ItemType);
         bool resolvedReferences = parameter.Kind == TaskParameterMessageKind.TaskOutput
@@ -103,7 +104,16 @@ public class BuildalyzerLogger : PipeLogger
         }
     }
 
-    private bool _inCoreCompile;
+    // The project contexts currently inside CoreCompile. This logger is a central logger, so under /m it sees
+    // every project's events interleaved on one thread: a single "in CoreCompile" flag would be cleared by
+    // whichever project's CoreCompile finished first, silently dropping the task inputs of every compiler
+    // still running. Targets don't nest within a project context, so a set of context ids is enough.
+    private readonly HashSet<int> _coreCompileContexts = [];
+
+    // Events without a build context are grouped under a single sentinel id rather than dropped, so target
+    // and task events that both lack one still pair up.
+    private static int ProjectContextId(BuildEventArgs e)
+        => e.BuildEventContext is BuildEventContext context ? context.ProjectContextId : int.MinValue;
 
     // MSBuild only forwards ITaskItem[] task inputs at normal verbosity (not scalar string parameters such
     // as DefineConstants), so only the compiler's item-group inputs are listed here. Preprocessor symbols are
@@ -116,7 +126,7 @@ public class BuildalyzerLogger : PipeLogger
         // Only send the CoreCompile target
         if (e.TargetName == "CoreCompile")
         {
-            _inCoreCompile = true;
+            _coreCompileContexts.Add(ProjectContextId(e));
             Pipe!.Write(e);
         }
     }
@@ -126,7 +136,7 @@ public class BuildalyzerLogger : PipeLogger
         // Only send the CoreCompile target
         if (e.TargetName == "CoreCompile")
         {
-            _inCoreCompile = false;
+            _coreCompileContexts.Remove(ProjectContextId(e));
             Pipe!.Write(e);
         }
     }
