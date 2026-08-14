@@ -136,6 +136,45 @@ public class MultiTargeting_specs
         actual.Should().BeEquivalentTo(reference, log.ToString());
     }
 
+    /// <summary>
+    /// When a multi-targeted library disables <c>AppendTargetFrameworkToOutputPath</c>, every flavour
+    /// claims the same output path, so the path alone can't say which flavour a consumer resolved.
+    /// A consumer whose own framework is among the library's must still be wired to that exact flavour
+    /// (which is also what MSBuild's nearest-framework negotiation picks), not an arbitrary one.
+    /// </summary>
+    [Test]
+    public async Task Consumer_binds_matching_flavour_when_frameworks_share_an_output_path()
+    {
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "SharedLib",
+            p => p
+                .Property("TargetFrameworks", "netstandard2.0;net8.0")
+                .Property("AppendTargetFrameworkToOutputPath", "false"),
+            Source("Widget.cs", "namespace SharedLib;\npublic class Widget { public int Value => 42; }\n"));
+        string appPath = fixture.AddProject(
+            "SharedApp",
+            p => p.Property("TargetFramework", "net8.0"),
+            Source("Program.cs", "namespace SharedApp;\npublic class Program { public SharedLib.Widget W = new(); }\n"));
+        ProjectFixture.AddProjectReference(appPath, libraryPath);
+        fixture.Restore(appPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(appPath);
+
+        // MSBuildWorkspace flags the shared output path with a "same file path and output path" workspace
+        // diagnostic but still loads both flavours and wires the negotiated one; tolerate only that.
+        comparison.MSBuildFailures
+            .Where(f => !f.Contains("same file path and output path", StringComparison.OrdinalIgnoreCase))
+            .Should().BeEmpty();
+        comparison.BuildalyzerLog.Should().NotContain("Workspace failed");
+
+        // The reference resolves to exactly the net8.0 flavour of the library, despite the shared path.
+        ReferencedFrameworks(comparison.MSBuild)
+            .Should().ContainSingle().Which.Should().Be("net8.0");
+        ReferencedFrameworks(comparison.Buildalyzer)
+            .Should().BeEquivalentTo(ReferencedFrameworks(comparison.MSBuild), comparison.BuildalyzerLog);
+    }
+
     /// <summary>The evaluated target frameworks of a project, read from the per-TFM project names in a solution.</summary>
     private static string[] TargetFrameworksOf(Solution solution, string projectPath) =>
     [

@@ -274,8 +274,8 @@ public static class AnalyzerResultExtensions
     // MSBuildWorkspace resolves the exact framework flavour of a multi-targeted dependency.
     private static Solution WireProjectReferences(Solution solution, ProjectId projectId, IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
     {
-        Dictionary<string, ProjectId> outputToProject = BuildOutputIndex(solution, projectId);
-        if (outputToProject.Count == 0)
+        Dictionary<string, List<(ProjectId Id, string? TargetFramework)>> outputToProjects = BuildOutputIndex(solution, projectId);
+        if (outputToProjects.Count == 0)
         {
             return solution;
         }
@@ -283,7 +283,9 @@ public static class AnalyzerResultExtensions
         HashSet<ProjectId> referenced = [];
         foreach (var reference in GetReferencePaths(analyzerResult, commandLine))
         {
-            if (outputToProject.TryGetValue(NormalizePath(reference.Reference), out ProjectId targetId) && referenced.Add(targetId))
+            if (outputToProjects.TryGetValue(NormalizePath(reference.Reference), out List<(ProjectId Id, string? TargetFramework)> candidates)
+                && ChooseReferencedProject(candidates, analyzerResult.TargetFramework) is { } targetId
+                && referenced.Add(targetId))
             {
                 // Carry the aliases and embed-interop flag over to the project reference. Turning a
                 // resolved assembly reference into a project reference must not change what the compiler
@@ -299,9 +301,12 @@ public static class AnalyzerResultExtensions
         return solution;
     }
 
-    private static Dictionary<string, ProjectId> BuildOutputIndex(Solution solution, ProjectId exclude)
+    // Every project claiming an output path is kept as a candidate: a multi-targeted project that sets
+    // AppendTargetFrameworkToOutputPath=false has one output path for ALL of its frameworks, so a single
+    // last-write-wins slot would silently rewire consumers to an arbitrary flavour.
+    private static Dictionary<string, List<(ProjectId Id, string? TargetFramework)>> BuildOutputIndex(Solution solution, ProjectId exclude)
     {
-        Dictionary<string, ProjectId> index = new(IOPath.Comparer);
+        Dictionary<string, List<(ProjectId Id, string? TargetFramework)>> index = new(IOPath.Comparer);
         foreach (Project project in solution.Projects)
         {
             if (project.Id.Equals(exclude))
@@ -309,16 +314,63 @@ public static class AnalyzerResultExtensions
                 continue;
             }
 
+            string? targetFramework = ExtractTargetFramework(project.Name);
             foreach (string? output in new[] { project.OutputFilePath, project.OutputRefFilePath })
             {
                 if (!string.IsNullOrEmpty(output))
                 {
-                    index[NormalizePath(output)] = project.Id;
+                    string normalized = NormalizePath(output);
+                    if (!index.TryGetValue(normalized, out List<(ProjectId Id, string? TargetFramework)> candidates))
+                    {
+                        index[normalized] = candidates = [];
+                    }
+
+                    if (!candidates.Any(c => c.Id.Equals(project.Id)))
+                    {
+                        candidates.Add((project.Id, targetFramework));
+                    }
                 }
             }
         }
 
         return index;
+    }
+
+    // The output path alone cannot say which framework flavour a consumer resolved when several projects
+    // claim the same path (AppendTargetFrameworkToOutputPath=false). Prefer the candidate whose framework
+    // equals the consuming result's - when the consumer's own framework is among the dependency's, that is
+    // also what MSBuild's nearest-framework negotiation picks. Otherwise fall back to the last candidate
+    // added, preserving the previous behaviour for references that stay genuinely ambiguous.
+    private static ProjectId? ChooseReferencedProject(List<(ProjectId Id, string? TargetFramework)> candidates, string? consumerTargetFramework)
+    {
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (candidates.Count > 1 && !string.IsNullOrEmpty(consumerTargetFramework))
+        {
+            foreach ((ProjectId id, string? targetFramework) in candidates)
+            {
+                if (string.Equals(targetFramework, consumerTargetFramework, StringComparison.OrdinalIgnoreCase))
+                {
+                    return id;
+                }
+            }
+        }
+
+        return candidates[^1].Id;
+    }
+
+    // The "(tfm)" discriminator ProjectName appends to a multi-targeted project's name is the only
+    // per-framework identity a Roslyn Project carries; a single-framework project keeps its bare name
+    // (and its output path can't collide with a sibling flavour's).
+    private static string? ExtractTargetFramework(string projectName)
+    {
+        int open = projectName.LastIndexOf('(');
+        return open >= 0 && projectName.EndsWith(")", StringComparison.Ordinal)
+            ? projectName[(open + 1)..^1]
+            : null;
     }
 
     // Locates an already-added Roslyn project by its identity: the project file it came from plus its name,
