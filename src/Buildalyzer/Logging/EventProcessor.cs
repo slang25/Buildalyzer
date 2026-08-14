@@ -72,6 +72,7 @@ internal sealed class EventProcessor : IDisposable
         source.TargetFinished += OnPipeTargetFinished;
         source.TaskParameterRaised += OnPipeTaskParameter;
         source.MessageRaised += OnPipeMessage;
+        source.ErrorRaised += OnPipeError;
         source.BuildFinished += OnPipeBuildFinished;
     }
 
@@ -307,6 +308,17 @@ internal sealed class EventProcessor : IDisposable
     private static int ProjectContextId(PipeBuildEventArgs e)
         => e.BuildEventContext is { } context ? context.ProjectContextId : int.MinValue;
 
+    // Surface build errors in the log. The pipe logger forwards ErrorRaised precisely so a failed build can
+    // say why; without a subscriber the reason is dropped and a failure shows only as a nonzero exit code.
+    private void OnPipeError(PipeBuildErrorEventArgs e)
+        => _logger?.LogError(
+            "{File}({Line},{Column}): error {Code}: {Message}",
+            string.IsNullOrEmpty(e.File) ? e.ProjectFile : e.File,
+            e.LineNumber,
+            e.ColumnNumber,
+            e.Code,
+            e.Message);
+
     private void OnPipeBuildFinished(PipeBuildFinishedEventArgs e) => OnBuildFinished(e.Succeeded);
 
     public void Dispose()
@@ -320,6 +332,7 @@ internal sealed class EventProcessor : IDisposable
             pipe.TargetFinished -= OnPipeTargetFinished;
             pipe.TaskParameterRaised -= OnPipeTaskParameter;
             pipe.MessageRaised -= OnPipeMessage;
+            pipe.ErrorRaised -= OnPipeError;
             pipe.BuildFinished -= OnPipeBuildFinished;
         }
     }
