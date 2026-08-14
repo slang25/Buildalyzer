@@ -27,8 +27,9 @@ internal static class CompilerCommandBuilder
         string? commandLineText,
         IReadOnlyDictionary<string, List<CompilerInputItem>> taskInputs)
     {
-        // Nothing was captured for this project - there is no compiler command to build.
-        if (string.IsNullOrWhiteSpace(commandLineText) && taskInputs.Count == 0)
+        // Nothing was captured for this project, or no recognized compiler language - there is no
+        // compiler command to build.
+        if (language == CompilerLanguage.None || (string.IsNullOrWhiteSpace(commandLineText) && taskInputs.Count == 0))
         {
             return null;
         }
