@@ -300,6 +300,10 @@ internal sealed class EventProcessor : IDisposable
 
     // Events without a build context are grouped under a single sentinel id rather than dropped, so a logger
     // that omits the context still pairs its target and task events with each other.
+    //
+    // The id alone is a safe key even for /m builds and their binlogs: a project-context id is unique across
+    // the whole build, not just its own node. MSBuild's LoggingService seeds each node's counter with the
+    // node id and advances it by MaxCPUCount + 2, so nodes allocate from disjoint ranges and never collide.
     private static int ProjectContextId(PipeBuildEventArgs e)
         => e.BuildEventContext is { } context ? context.ProjectContextId : int.MinValue;
 

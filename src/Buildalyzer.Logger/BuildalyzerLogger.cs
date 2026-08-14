@@ -112,6 +112,10 @@ public class BuildalyzerLogger : PipeLogger
 
     // Events without a build context are grouped under a single sentinel id rather than dropped, so target
     // and task events that both lack one still pair up.
+    //
+    // The id alone is a safe key even under /m: a project-context id is unique across the whole build, not
+    // just its own node. MSBuild's LoggingService seeds each node's counter with the node id and advances it
+    // by MaxCPUCount + 2, so nodes allocate from disjoint ranges and never collide.
     private static int ProjectContextId(BuildEventArgs e)
         => e.BuildEventContext is BuildEventContext context ? context.ProjectContextId : int.MinValue;
 
