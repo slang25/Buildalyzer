@@ -363,6 +363,29 @@ public class SimpleProjectsFixture
     }
 
     [Test]
+    public void MultiTargetingFromImportedPropsBuildsAllTargetFrameworks()
+    {
+        // <TargetFrameworks> lives in Directory.Build.props, where the XML scan
+        // (IsMultiTargeted) can't see it, so the frameworks must be discovered from
+        // MSBuild's evaluation and the project rebuilt per framework.
+        using var ctx = Context.ForProject("SdkMultiTargetingFromProps/SdkMultiTargetingFromProps.csproj");
+
+        ctx.Analyzer.ProjectFile.IsMultiTargeted.Should().BeFalse();
+
+        IAnalyzerResults results = ctx.Analyzer.Build();
+
+        results.OverallSuccess.Should().BeTrue(ctx.Log.ToString());
+        results.TargetFrameworks.Should().BeEquivalentTo(["net8.0", "netstandard2.0"], ctx.Log.ToString());
+        results.Should().AllSatisfy(
+            r =>
+            {
+                r.Succeeded.Should().BeTrue();
+                r.SourceFiles.Should().Contain(x => Path.GetFileName(x) == "Class1.cs");
+            },
+            ctx.Log.ToString());
+    }
+
+    [Test]
     public void SolutionDirShouldEndWithDirectorySeparator()
     {
         // Given

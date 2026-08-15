@@ -78,10 +78,11 @@ public class ProjectAnalyzer : IProjectAnalyzer
     {
         Guard.NotNull(environmentOptions);
 
-        // If the set of target frameworks is empty, just build the default
+        // If the set of target frameworks is empty, build the default the same way Build() does,
+        // so a multi-targeted project still builds per framework.
         if (targetFrameworks == null || targetFrameworks.Length == 0)
         {
-            targetFrameworks = [null];
+            return BuildSingleOrMultiTargeted(targetFramework => EnvironmentFactory.GetBuildEnvironment(targetFramework, environmentOptions), environmentOptions.Restore);
         }
 
         AnalyzerResults results = [];
@@ -113,10 +114,11 @@ public class ProjectAnalyzer : IProjectAnalyzer
     {
         Guard.NotNull(buildEnvironment);
 
-        // If the set of target frameworks is empty, just build the default
+        // If the set of target frameworks is empty, build the default the same way Build() does,
+        // so a multi-targeted project still builds per framework.
         if (targetFrameworks == null || targetFrameworks.Length == 0)
         {
-            targetFrameworks = [null];
+            return BuildSingleOrMultiTargeted(_ => buildEnvironment, buildEnvironment.Restore);
         }
 
         AnalyzerResults results = [];
@@ -278,27 +280,49 @@ public class ProjectAnalyzer : IProjectAnalyzer
     public IAnalyzerResults Build()
     {
         EnvironmentOptions options = new();
-        return ProjectFile.IsMultiTargeted
-            ? BuildMultiTargeted(targetFramework => EnvironmentFactory.GetBuildEnvironment(targetFramework, options), options.Restore)
-            : Build((string?)null, options);
+        return BuildSingleOrMultiTargeted(targetFramework => EnvironmentFactory.GetBuildEnvironment(targetFramework, options), options.Restore);
     }
 
     /// <inheritdoc/>
     public IAnalyzerResults Build(EnvironmentOptions environmentOptions)
     {
         Guard.NotNull(environmentOptions);
-        return ProjectFile.IsMultiTargeted
-            ? BuildMultiTargeted(targetFramework => EnvironmentFactory.GetBuildEnvironment(targetFramework, environmentOptions), environmentOptions.Restore)
-            : Build((string?)null, environmentOptions);
+        return BuildSingleOrMultiTargeted(targetFramework => EnvironmentFactory.GetBuildEnvironment(targetFramework, environmentOptions), environmentOptions.Restore);
     }
 
     /// <inheritdoc/>
     public IAnalyzerResults Build(BuildEnvironment buildEnvironment)
     {
         Guard.NotNull(buildEnvironment);
-        return ProjectFile.IsMultiTargeted
-            ? BuildMultiTargeted(_ => buildEnvironment, buildEnvironment.Restore)
-            : Build((string?)null, buildEnvironment);
+        return BuildSingleOrMultiTargeted(_ => buildEnvironment, buildEnvironment.Restore);
+    }
+
+    // IsMultiTargeted is an XML scan, so a <TargetFrameworks> declared in an imported file
+    // (e.g. Directory.Build.props) is invisible to it and the project starts down the
+    // single-targeted path: one unpinned invocation. For a project that is in fact
+    // multi-targeted that invocation runs against the cross-targeting outer build, where the
+    // default Compile target doesn't exist (MSB4057) and the only per-framework results come
+    // from the restore's evaluations - empty shells with no compiler invocation behind them.
+    // The invocation's evaluation still yields the real TargetFrameworks value, though, so a
+    // failed build that evaluated one is discarded and rebuilt per framework instead.
+    // BuildMultiTargeted re-runs the restore rather than reusing the discarded attempt's: the
+    // attempt's failure may *be* a restore failure, which the retry then surfaces properly.
+    // A successful unpinned build is kept even if multi-targeted: custom TargetsToBuild that
+    // exist in the outer build (e.g. Build) dispatch to the inner builds themselves.
+    private IAnalyzerResults BuildSingleOrMultiTargeted(Func<string?, BuildEnvironment> environmentFor, bool restore)
+    {
+        if (ProjectFile.IsMultiTargeted)
+        {
+            return BuildMultiTargeted(environmentFor, restore);
+        }
+
+        IAnalyzerResults results = Build((string?)null, environmentFor(null));
+        if (results.OverallSuccess || EvaluatedTargetFrameworks(results).Length == 0)
+        {
+            return results;
+        }
+
+        return BuildMultiTargeted(environmentFor, restore);
     }
 
     // Builds a multi-targeted project as one result per framework. The frameworks come from MSBuild's
