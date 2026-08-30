@@ -31,5 +31,6 @@ public class CompilerLogExtensionsFixture
         Compilation compilation = data.GetCompilationAfterGenerators();
 
         compilation.GetSymbolsWithName("Class1").Should().NotBeEmpty();
+        compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
     }
 }

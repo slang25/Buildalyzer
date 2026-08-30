@@ -21,7 +21,7 @@ ToBeReleased
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Basic.CompilerLog.Util" Version="0.9.53" />
+    <PackageReference Include="Basic.CompilerLog.Util" Version="0.9.60" />
     <PackageReference Include="Krafs.Publicizer" Version="2.3.2" PrivateAssets="all" />
   </ItemGroup>
 
