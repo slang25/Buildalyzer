@@ -34,11 +34,30 @@ at runtime rather than copied next to the test binary.
 
 ## What is compared
 
-`RoslynProjectExtensions` normalises each side to order-independent, case-insensitive sets so
-they can be diffed with `BeEquivalentTo`: source documents, additional documents, metadata
-references, analyzer references, project references, preprocessor symbols, plus scalar
-compilation/parse facts (output kind, `AllowUnsafe`, overflow checks, nullable context,
-platform, effective language version, warning level, deterministic).
+`RoslynProjectExtensions` normalises each side to order-independent sets of **full paths** so
+they can be diffed with `BeEquivalentTo`: source documents, additional documents, analyzer
+config documents, metadata references, analyzer references, project references and the
+projects in the whole loaded graph. Full paths rather than file names, because both loaders run
+against the same checkout and a name-only comparison would hide a document or reference
+resolved from the wrong directory. The `*Names()` variants exist for "contains X" checks.
+
+`ProjectShape` goes further: `project.Shape()` flattens *everything* observable about a Roslyn
+project into plain values so one `BeEquivalentTo` reports every difference at once:
+
+- identity: name (including Roslyn's `Name(tfm)` convention for multi-targeted projects),
+  assembly name, language, project path, output and reference-assembly paths, default namespace;
+- documents of all three kinds with their name, path, logical folders and source-code kind;
+- project references with target flavour, aliases and `EmbedInteropTypes`;
+- metadata references with path, display, aliases, `EmbedInteropTypes` and kind;
+- analyzer references with display and full path (unresolved ones included);
+- every scalar compilation option (output kind, module/main type, optimisation, overflow,
+  platform, warnings, concurrency, determinism, signing, metadata import, specific diagnostic
+  options, plus C# unsafe/nullable and the VB `Option *`, root namespace and global imports);
+- every parse option (kind, documentation mode, features, language version, preprocessor
+  symbols, and VB's valued symbols).
+
+`solution.Shape()` does the same for every project in a workspace, so a graph can be compared
+end to end, including which flavour of a multi-targeted dependency each consumer was wired to.
 
 ## Adding a scenario
 

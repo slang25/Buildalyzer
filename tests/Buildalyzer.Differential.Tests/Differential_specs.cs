@@ -31,10 +31,14 @@ public class Differential_specs
 
         AssertLoadedCleanly(comparison);
         comparison.Buildalyzer.Language.Should().Be(comparison.MSBuild.Language);
-        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
-        comparison.Buildalyzer.MetadataReferenceNames().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferenceNames());
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths());
         comparison.Buildalyzer.CompilationOptions!.OutputKind.Should().Be(comparison.MSBuild.CompilationOptions!.OutputKind);
         comparison.Buildalyzer.PreprocessorSymbols().Should().BeEquivalentTo(comparison.MSBuild.PreprocessorSymbols());
+
+        // And everything else in one go: identity, output paths, every document and reference
+        // with its metadata, and every compilation/parse option.
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape());
     }
 
     [Test]
@@ -84,6 +88,11 @@ public class Differential_specs
             reference.NullableContextOptions,
             reference.Platform,
         });
+
+        // Every other scalar option too (module/main type, signing, determinism, concurrency,
+        // metadata import, diagnostic configuration, ...), and the parse options alongside.
+        comparison.Buildalyzer.Shape().CompilationOptions.Should().BeEquivalentTo(comparison.MSBuild.Shape().CompilationOptions);
+        comparison.Buildalyzer.Shape().ParseOptions.Should().BeEquivalentTo(comparison.MSBuild.Shape().ParseOptions);
     }
 
     [Test]
@@ -126,8 +135,8 @@ public class Differential_specs
         using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
 
         AssertLoadedCleanly(comparison);
-        comparison.Buildalyzer.AdditionalDocumentNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.AdditionalDocumentNames());
+        comparison.Buildalyzer.AdditionalDocumentPaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AdditionalDocumentPaths());
     }
 
     [Test]
@@ -145,9 +154,9 @@ public class Differential_specs
         using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
 
         AssertLoadedCleanly(comparison);
-        comparison.Buildalyzer.MetadataReferenceNames()
-            .Should().Contain("Newtonsoft.Json.dll")
-            .And.BeEquivalentTo(comparison.MSBuild.MetadataReferenceNames());
+        comparison.Buildalyzer.MetadataReferenceNames().Should().Contain("Newtonsoft.Json.dll");
+        comparison.Buildalyzer.MetadataReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths());
     }
 
     [Test]
@@ -168,9 +177,9 @@ public class Differential_specs
         using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(appPath);
 
         AssertLoadedCleanly(comparison);
-        comparison.Buildalyzer.ProjectReferenceNames()
-            .Should().Contain("Library.csproj")
-            .And.BeEquivalentTo(comparison.MSBuild.ProjectReferenceNames());
+        comparison.Buildalyzer.ProjectReferenceNames().Should().Contain("Library.csproj");
+        comparison.Buildalyzer.ProjectReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.ProjectReferencePaths());
     }
 
     [Test]
@@ -190,8 +199,8 @@ public class Differential_specs
         // The .NET SDK injects a fixed set of analyzers and source generators; both loaders
         // should surface exactly the same set.
         comparison.MSBuild.AnalyzerReferenceNames().Should().NotBeEmpty();
-        comparison.Buildalyzer.AnalyzerReferenceNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferenceNames());
+        comparison.Buildalyzer.AnalyzerReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferencePaths());
     }
 
     [Test]
@@ -238,17 +247,17 @@ public class Differential_specs
 
         // Analyzers/generators delivered by a NuGet package are resolved through a different
         // MSBuild path (ResolvePackageAssets) than the implicit SDK analyzers.
-        comparison.Buildalyzer.AnalyzerReferenceNames()
-            .Should().Contain("Riok.Mapperly.dll")
-            .And.BeEquivalentTo(comparison.MSBuild.AnalyzerReferenceNames());
+        comparison.Buildalyzer.AnalyzerReferenceNames().Should().Contain("Riok.Mapperly.dll");
+        comparison.Buildalyzer.AnalyzerReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferencePaths());
 
         // Every document collection should agree, including the analyzer-config documents that
         // carry the build_property.* values a source generator reads at run time.
-        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
-        comparison.Buildalyzer.AdditionalDocumentNames().Should().BeEquivalentTo(comparison.MSBuild.AdditionalDocumentNames());
-        comparison.Buildalyzer.AnalyzerConfigDocumentNames()
-            .Should().Contain("GeneratorProject.GeneratedMSBuildEditorConfig.editorconfig")
-            .And.BeEquivalentTo(comparison.MSBuild.AnalyzerConfigDocumentNames());
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
+        comparison.Buildalyzer.AdditionalDocumentPaths().Should().BeEquivalentTo(comparison.MSBuild.AdditionalDocumentPaths());
+        comparison.Buildalyzer.AnalyzerConfigDocumentNames().Should().Contain("GeneratorProject.GeneratedMSBuildEditorConfig.editorconfig");
+        comparison.Buildalyzer.AnalyzerConfigDocumentPaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerConfigDocumentPaths());
     }
 
     [Test]
@@ -306,9 +315,71 @@ public class Differential_specs
         AssertLoadedCleanly(comparison);
         comparison.Buildalyzer.Language.Should().Be(LanguageNames.VisualBasic);
         comparison.Buildalyzer.Language.Should().Be(comparison.MSBuild.Language);
-        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
-        comparison.Buildalyzer.MetadataReferenceNames().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferenceNames());
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths());
         comparison.Buildalyzer.CompilationOptions!.OutputKind.Should().Be(comparison.MSBuild.CompilationOptions!.OutputKind);
+        WithoutVbPreprocessorSymbols(comparison.Buildalyzer.Shape())
+            .Should().BeEquivalentTo(WithoutVbPreprocessorSymbols(comparison.MSBuild.Shape()));
+    }
+
+    [Test]
+    public async Task Visual_basic_options_match_reference()
+    {
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "VbOptions",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .Property("RootNamespace", "Custom.Vb")
+                .Property("OptionStrict", "On")
+                .Property("OptionExplicit", "Off")
+                .Property("OptionInfer", "On")
+                .Property("OptionCompare", "Text")
+                .Property("DefineConstants", "MY_FLAG=True,MY_NUMBER=42")
+                .Property("GenerateDocumentationFile", "true"),
+            Source("Widget.vb", "Public Class Widget\nEnd Class\n"),
+            extension: ".vbproj");
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        // VB-only options (Option Strict/Explicit/Infer/Compare, root namespace, the SDK's global
+        // imports) and VB's valued preprocessor symbols travel via vbc's command line; both loaders
+        // must agree on every one of them.
+        SortedDictionary<string, string?> ms = comparison.MSBuild.Shape().CompilationOptions;
+        ms.Should().Contain("OptionStrict", "On").And.Contain("OptionExplicit", "False").And.Contain("OptionCompareText", "True");
+        ms["GlobalImports"].Should().Contain("Microsoft.VisualBasic");
+        comparison.Buildalyzer.Shape().CompilationOptions.Should().BeEquivalentTo(ms);
+
+        // The defines come from vbc's real command line on the Buildalyzer side (see
+        // WithoutVbPreprocessorSymbols for why the reference cannot be used for them).
+        ProjectShape ba = comparison.Buildalyzer.Shape();
+        ba.ParseOptions["PreprocessorSymbolValues"].Should().Contain("MY_FLAG=True").And.Contain("MY_NUMBER=42").And.Contain("NET10_0=-1");
+        WithoutVbPreprocessorSymbols(ba).ParseOptions
+            .Should().BeEquivalentTo(WithoutVbPreprocessorSymbols(comparison.MSBuild.Shape()).ParseOptions);
+    }
+
+    /// <summary>
+    /// MSBuildWorkspace loses VB preprocessor symbols: for a VB project it reports only the compiler's own
+    /// implicit symbols (<c>TARGET</c>, <c>VBC_VER</c>), none of the <c>/define</c> values vbc actually
+    /// receives (<c>CONFIG</c>, <c>DEBUG</c>, the <c>NETx_y</c> family, the project's own
+    /// <c>DefineConstants</c>). Its property-based fallback reads <c>FinalDefineConstants</c>, which the SDK's
+    /// design-time build leaves unset. Buildalyzer reads the real command line and has them all, so the
+    /// reference cannot be the oracle here: VB shape comparisons drop the symbols and assert Buildalyzer's
+    /// directly instead.
+    /// </summary>
+    private static ProjectShape WithoutVbPreprocessorSymbols(ProjectShape shape)
+    {
+        if (shape.Language != LanguageNames.VisualBasic)
+        {
+            return shape;
+        }
+
+        SortedDictionary<string, string?> parse = new(shape.ParseOptions, StringComparer.Ordinal);
+        parse.Remove("PreprocessorSymbols");
+        parse.Remove("PreprocessorSymbolValues");
+        return shape with { ParseOptions = parse };
     }
 
     [Test]
@@ -330,8 +401,8 @@ public class Differential_specs
         // ImplicitUsings makes the SDK emit an <Assembly>.GlobalUsings.g.cs Compile item.
         comparison.MSBuild.SourceFileNames()
             .Should().Contain(x => x.EndsWith("GlobalUsings.g.cs", StringComparison.Ordinal));
-        comparison.Buildalyzer.SourceFileNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
+        comparison.Buildalyzer.SourceFilePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
     }
 
     [Test]
@@ -357,8 +428,8 @@ public class Differential_specs
         using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(top);
 
         AssertLoadedCleanly(comparison);
-        comparison.Buildalyzer.SolutionProjectNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.SolutionProjectNames());
+        comparison.Buildalyzer.SolutionProjectPaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.SolutionProjectPaths());
         comparison.Buildalyzer.SolutionProjectNames()
             .Should().BeEquivalentTo("Top.csproj", "Middle.csproj", "Leaf.csproj");
     }
@@ -383,8 +454,8 @@ public class Differential_specs
 
         AssertLoadedCleanly(comparison);
         comparison.MSBuild.SourceFileNames().Should().Contain("Shared.cs");
-        comparison.Buildalyzer.SourceFileNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
+        comparison.Buildalyzer.SourceFilePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
     }
 
     [TestCase("net8.0")]
@@ -404,9 +475,13 @@ public class Differential_specs
 
         // Sources are shared, but references and preprocessor symbols are framework-specific
         // (e.g. NET8_0 vs NET10_0), so this checks Buildalyzer builds the right target.
-        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
-        comparison.Buildalyzer.MetadataReferenceNames().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferenceNames());
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths());
         comparison.Buildalyzer.PreprocessorSymbols().Should().BeEquivalentTo(comparison.MSBuild.PreprocessorSymbols());
+
+        // Roslyn names each flavour "<Project>(<tfm>)" (no space); everything else must match too.
+        comparison.MSBuild.Name.Should().Be($"MultiTarget({targetFramework})");
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape());
     }
 
     [Test]
@@ -427,8 +502,8 @@ public class Differential_specs
 
         AssertLoadedCleanly(comparison);
         comparison.MSBuild.AnalyzerConfigDocumentNames().Should().Contain(".editorconfig");
-        comparison.Buildalyzer.AnalyzerConfigDocumentNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerConfigDocumentNames());
+        comparison.Buildalyzer.AnalyzerConfigDocumentPaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerConfigDocumentPaths());
     }
 
     [Test]
@@ -721,7 +796,7 @@ public class Differential_specs
 
         // The missing path is a document on both sides, not silently dropped.
         comparison.MSBuild.SourceFileNames().Should().Contain("Missing.cs", "the reference keeps missing paths as documents");
-        comparison.Buildalyzer.SourceFileNames().Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames());
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
 
         // The read fails lazily and identically on both sides: an empty document, not an exception.
         string ba = await DocumentText(comparison.Buildalyzer, "Missing.cs");
@@ -752,9 +827,22 @@ public class Differential_specs
             .Should().NotBeEmpty("the reference surfaces missing analyzers as unresolved");
         comparison.Buildalyzer.AnalyzerReferences.OfType<UnresolvedAnalyzerReference>()
             .Should().ContainSingle().Which.Display.Should().Contain("NotBuilt");
+
+        // The resolved analyzers must match by full path. The unresolved one can only be matched by name:
+        // MSBuildWorkspace keeps the raw command-line string for an analyzer it could not load (here the
+        // relative "analyzers/NotBuilt.dll"), whereas Buildalyzer keeps the rooted path it was given.
+        ResolvedAnalyzerPaths(comparison.Buildalyzer).Should().BeEquivalentTo(ResolvedAnalyzerPaths(comparison.MSBuild));
         comparison.Buildalyzer.AnalyzerReferenceNames()
             .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferenceNames());
     }
+
+    private static string[] ResolvedAnalyzerPaths(Project project) =>
+    [
+        .. project.AnalyzerReferences
+            .OfType<AnalyzerFileReference>()
+            .Select(r => Path.GetFullPath(r.FullPath))
+            .OrderBy(x => x, StringComparer.Ordinal)
+    ];
 
     [Test]
     public void Recovers_workspace_when_build_fails_before_compile()
@@ -1157,6 +1245,156 @@ public class Differential_specs
         await TestContext.Out.WriteLineAsync($"additional       MS=[{string.Join(", ", comparison.MSBuild.AdditionalDocumentNames())}]");
         await TestContext.Out.WriteLineAsync($"analyzerconfig   BA=[{string.Join(", ", comparison.Buildalyzer.AnalyzerConfigDocumentNames())}]");
         await TestContext.Out.WriteLineAsync($"analyzerconfig   MS=[{string.Join(", ", comparison.MSBuild.AnalyzerConfigDocumentNames())}]");
+    }
+
+    [Test]
+    public async Task Reference_aliases_match_reference()
+    {
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "AliasedLibrary",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Widget.cs", "namespace AliasedLibrary;\npublic class Widget { }\n"));
+        string appPath = fixture.AddProject(
+            "AliasApp",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source(
+                "Program.cs",
+                "extern alias Json;\nextern alias Lib;\n"
+                + "public class Program { Json::Newtonsoft.Json.Linq.JObject? O; Lib::AliasedLibrary.Widget? W; }\n"));
+        ProjectFixture.AddItem(appPath, "PackageReference", "Newtonsoft.Json", new Dictionary<string, string>
+        {
+            ["Version"] = "13.0.3",
+            ["Aliases"] = "Json",
+        });
+        ProjectFixture.AddItem(
+            appPath,
+            "ProjectReference",
+            Path.GetRelativePath(Path.GetDirectoryName(appPath)!, libraryPath).Replace('/', '\\'),
+            new Dictionary<string, string> { ["Aliases"] = "Lib" });
+        fixture.Restore(appPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(appPath);
+        AssertLoadedCleanly(comparison);
+
+        // Aliases ride on the compiler's /reference:Alias=path switches; both loaders must carry them
+        // onto the metadata reference (package) and the project reference (project) alike.
+        ProjectShape ms = comparison.MSBuild.Shape();
+        ms.MetadataReferences.Should().Contain(r => r.Aliases == "Json" && r.FilePath!.EndsWith("Newtonsoft.Json.dll", StringComparison.Ordinal));
+        ms.ProjectReferences.Should().ContainSingle().Which.Aliases.Should().Be("Lib");
+
+        ProjectShape ba = comparison.Buildalyzer.Shape();
+        ba.MetadataReferences.Should().BeEquivalentTo(ms.MetadataReferences);
+        ba.ProjectReferences.Should().BeEquivalentTo(ms.ProjectReferences);
+
+        // And the aliases actually resolve: the extern alias directives compile on both sides.
+        (await CompilationErrors(comparison.MSBuild)).Should().BeEmpty();
+        (await CompilationErrors(comparison.Buildalyzer)).Should().BeEquivalentTo(await CompilationErrors(comparison.MSBuild));
+    }
+
+    [Test]
+    public async Task Signing_options_match_reference()
+    {
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "PublicSignProject",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .Property("SignAssembly", "true")
+                .Property("PublicSign", "true")
+                .Property("AssemblyOriginatorKeyFile", "key.snk"),
+            Source("Class1.cs", "namespace PublicSignProject;\npublic class Class1 { }\n"));
+        StrongNameKey.Write(Path.Combine(Path.GetDirectoryName(projectPath)!, "key.snk"));
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        SortedDictionary<string, string?> ms = comparison.MSBuild.Shape().CompilationOptions;
+        ms["CryptoKeyFile"].Should().EndWith("key.snk");
+        ms.Should().Contain("PublicSign", "True");
+        comparison.Buildalyzer.Shape().CompilationOptions.Should().BeEquivalentTo(ms);
+    }
+
+    [Test]
+    public async Task Project_shape_matches_reference()
+    {
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "ShapeLibrary",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Widget.cs", "namespace ShapeLibrary;\npublic class Widget { }\n"));
+        string projectPath = fixture.AddProject(
+            "ShapeProject",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .Property("RootNamespace", "Shape.Root")
+                .Property("AssemblyName", "Shape.Assembly")
+                .Property("GenerateDocumentationFile", "true")
+                .Property("NoWarn", "CS1591")
+                .ItemPackageReference("Newtonsoft.Json", "13.0.3"),
+            new Dictionary<string, string>
+            {
+                ["Class1.cs"] = "namespace ShapeProject;\npublic class Class1 { }\n",
+                ["Models/Thing.cs"] = "namespace ShapeProject.Models;\npublic class Thing { }\n",
+                ["Docs/notes.txt"] = "notes\n",
+                [".editorconfig"] = "root = true\n",
+            });
+        ProjectFixture.AddItem(projectPath, "AdditionalFiles", @"Docs\notes.txt");
+        ProjectFixture.AddProjectReference(projectPath, libraryPath);
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        // One representative project exercising every facet the shape captures: identity and output
+        // paths, documents of all three kinds with folders, package/project/analyzer references, and
+        // the full option set. Any divergence is reported field by field.
+        ProjectShape ms = comparison.MSBuild.Shape();
+        ms.AssemblyName.Should().Be("Shape.Assembly");
+        ms.DefaultNamespace.Should().Be("Shape.Root");
+        ms.OutputFilePath.Should().EndWith("Shape.Assembly.dll");
+        ms.OutputRefFilePath.Should().NotBeNull();
+        ms.Documents.Should().Contain(d => d.Name == "Thing.cs" && d.Folders == "Models");
+        ms.AdditionalDocuments.Should().Contain(d => d.Name == "notes.txt" && d.Folders == "Docs");
+        ms.AnalyzerConfigDocuments.Should().Contain(d => d.Name == ".editorconfig");
+        ms.ProjectReferences.Should().ContainSingle().Which.TargetName.Should().Be("ShapeLibrary");
+        ms.AnalyzerReferences.Should().NotBeEmpty();
+
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(ms);
+    }
+
+    [Test]
+    public async Task Solution_shape_matches_reference()
+    {
+        using ProjectFixture fixture = new();
+        string leaf = fixture.AddProject(
+            "Leaf",
+            p => p.Property("TargetFrameworks", "netstandard2.0;" + TargetFramework),
+            Source("Leaf.cs", "namespace Leaf;\npublic class L { }\n"));
+        string middle = fixture.AddProject(
+            "Middle",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Middle.cs", "namespace Middle;\npublic class M { Leaf.L L = new(); }\n"));
+        string top = fixture.AddProject(
+            "Top",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Top.cs", "namespace Top;\npublic class T { Middle.M M = new(); }\n"));
+        ProjectFixture.AddProjectReference(middle, leaf);
+        ProjectFixture.AddProjectReference(top, middle);
+        fixture.Restore(top);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(top);
+        AssertLoadedCleanly(comparison);
+
+        // The whole graph, not just the primary: every project MSBuildWorkspace loaded (including both
+        // flavours of the multi-targeted leaf) must exist on the Buildalyzer side with the same shape,
+        // and the project references must point at the same flavours.
+        ProjectShape[] ms = comparison.MSBuild.Solution.Shape();
+        ms.Select(p => p.Name).Should().BeEquivalentTo("Top", "Middle", "Leaf(netstandard2.0)", $"Leaf({TargetFramework})");
+        ms.Single(p => p.Name == "Middle").ProjectReferences.Should().ContainSingle().Which.TargetName.Should().Be($"Leaf({TargetFramework})");
+
+        comparison.Buildalyzer.Solution.Shape().Should().BeEquivalentTo(ms);
     }
 
     private static void AssertLoadedCleanly(WorkspaceComparison comparison)

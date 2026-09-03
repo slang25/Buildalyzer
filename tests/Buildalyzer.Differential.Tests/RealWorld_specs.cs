@@ -81,23 +81,27 @@ public class RealWorld_specs
         await ReportAsync(repo, comparison);
 
         string log = comparison.BuildalyzerLog;
-        comparison.Buildalyzer.SourceFileNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.SourceFileNames(), log);
-        comparison.Buildalyzer.MetadataReferenceNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.MetadataReferenceNames(), log);
-        comparison.Buildalyzer.AnalyzerReferenceNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferenceNames(), log);
-        comparison.Buildalyzer.ProjectReferenceNames()
-            .Should().BeEquivalentTo(comparison.MSBuild.ProjectReferenceNames(), log);
+        comparison.Buildalyzer.SourceFilePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths(), log);
+        comparison.Buildalyzer.MetadataReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths(), log);
+        comparison.Buildalyzer.AnalyzerReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferencePaths(), log);
+        comparison.Buildalyzer.ProjectReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.ProjectReferencePaths(), log);
+
+        // Then everything else: identity, output paths, document folders, reference aliases and
+        // interop flags, analyzer display names, and every compilation/parse option.
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), log);
     }
 
     private static async Task ReportAsync(Repo repo, WorkspaceComparison comparison)
     {
         await TestContext.Out.WriteLineAsync($"# {repo.Name} @ {repo.Tag} ({repo.TargetFramework})");
-        await WriteSetAsync("source files", comparison.Buildalyzer.SourceFileNames(), comparison.MSBuild.SourceFileNames());
-        await WriteSetAsync("metadata references", comparison.Buildalyzer.MetadataReferenceNames(), comparison.MSBuild.MetadataReferenceNames());
-        await WriteSetAsync("analyzer references", comparison.Buildalyzer.AnalyzerReferenceNames(), comparison.MSBuild.AnalyzerReferenceNames());
-        await WriteSetAsync("project references", comparison.Buildalyzer.ProjectReferenceNames(), comparison.MSBuild.ProjectReferenceNames());
+        await WriteSetAsync("source files", comparison.Buildalyzer.SourceFilePaths(), comparison.MSBuild.SourceFilePaths());
+        await WriteSetAsync("metadata references", comparison.Buildalyzer.MetadataReferencePaths(), comparison.MSBuild.MetadataReferencePaths());
+        await WriteSetAsync("analyzer references", comparison.Buildalyzer.AnalyzerReferencePaths(), comparison.MSBuild.AnalyzerReferencePaths());
+        await WriteSetAsync("project references", comparison.Buildalyzer.ProjectReferencePaths(), comparison.MSBuild.ProjectReferencePaths());
 
         if (comparison.MSBuildFailures.Count > 0)
         {

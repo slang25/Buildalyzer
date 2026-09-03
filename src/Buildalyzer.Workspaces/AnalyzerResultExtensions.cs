@@ -66,8 +66,10 @@ public static class AnalyzerResultExtensions
             AddReferencedAnalyzers(analyzerResult.Manager, analyzerResult.ProjectReferences, workspace, visited, prebuilt);
         }
 
-        // A single result adds as a bare-named project (no target-framework discriminator).
-        ProjectId? projectId = AddResult(analyzerResult, workspace, addDiscriminator: false);
+        // Match MSBuildWorkspace's naming: a framework flavour of a multi-targeted project is
+        // "<Project>(<tfm>)" even when it is the only flavour being added; a single-targeted project
+        // keeps its bare name.
+        ProjectId? projectId = AddResult(analyzerResult, workspace, addDiscriminator: IsMultiTargeted(analyzerResult));
         return projectId is null ? null : workspace.CurrentSolution.GetProject(projectId);
     }
 
@@ -99,13 +101,15 @@ public static class AnalyzerResultExtensions
             AddReferencedAnalyzers(analyzer.Manager, results.SelectMany(r => r.ProjectReferences), workspace, visited, prebuilt);
         }
 
-        // Match MSBuildWorkspace: only append a "(tfm)" discriminator when the project produced more
-        // than one framework; a single-framework project keeps its bare name.
-        bool addDiscriminator = results
-            .Select(r => r.TargetFramework)
-            .Where(tfm => !string.IsNullOrEmpty(tfm))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Count() > 1;
+        // Match MSBuildWorkspace: append a "(tfm)" discriminator when the project is multi-targeted (it
+        // declares TargetFrameworks, or produced more than one framework); a single-targeted project keeps
+        // its bare name.
+        bool addDiscriminator = results.Any(IsMultiTargeted)
+            || results
+                .Select(r => r.TargetFramework)
+                .Where(tfm => !string.IsNullOrEmpty(tfm))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() > 1;
 
         List<ProjectId> ids = [];
         foreach (IAnalyzerResult result in results)
@@ -429,6 +433,12 @@ public static class AnalyzerResultExtensions
             EmbedInteropTypes: analyzerResult.ReferencesEmbeddingInteropTypes.Contains(reference)));
     }
 
+    // Whether the project declares itself multi-targeted. Reads the evaluated TargetFrameworks property of
+    // the build (present in each framework's inner build too), which is exactly how MSBuildWorkspace decides
+    // to load a project once per framework and name each "<Project>(<tfm>)".
+    private static bool IsMultiTargeted(IAnalyzerResult analyzerResult) =>
+        !string.IsNullOrWhiteSpace(analyzerResult.GetProperty("TargetFrameworks"));
+
     private static string ProjectName(IAnalyzerResult analyzerResult, bool addDiscriminator)
     {
         string name = Path.GetFileNameWithoutExtension(analyzerResult.ProjectFilePath);
@@ -516,6 +526,14 @@ public static class AnalyzerResultExtensions
         if (compilationOptions is not null)
         {
             compilationOptions = WithWorkspaceServices(compilationOptions, projectDirectory);
+        }
+
+        // The compiler only parses doc comments when asked to emit them (/doc), so a project without
+        // GenerateDocumentationFile parses with DocumentationMode.None. MSBuildWorkspace always raises that
+        // to Parse ("ensure that doc-comments are parsed") so IDE features see the comments; do the same.
+        if (parseOptions is { DocumentationMode: DocumentationMode.None })
+        {
+            parseOptions = parseOptions.WithDocumentationMode(DocumentationMode.Parse);
         }
 
         return (compilationOptions, parseOptions);
