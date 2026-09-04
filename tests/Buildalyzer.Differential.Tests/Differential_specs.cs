@@ -1397,6 +1397,159 @@ public class Differential_specs
         comparison.Buildalyzer.Solution.Shape().Should().BeEquivalentTo(ms);
     }
 
+    [Test]
+    public async Task Paths_with_parent_segments_are_canonical()
+    {
+        // Items pulled in by package build logic routinely carry un-normalized segments - a
+        // "<pkg>/build/../stylecop.json" AdditionalFiles include, a "../Shared/*.cs" link, a HintPath
+        // through "..". MSBuildWorkspace reports every input as a canonical full path (Roslyn's parser
+        // resolves and collapses them); the same file must not surface under a different spelling here,
+        // since consumers key documents and references by path.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "DottedPaths",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Class1.cs", "namespace DottedPaths;\npublic class Class1 { }\n"));
+        string projectDirectory = Path.GetDirectoryName(projectPath)!;
+
+        Directory.CreateDirectory(Path.Combine(fixture.Root.FullName, "Shared"));
+        File.WriteAllText(Path.Combine(fixture.Root.FullName, "Shared", "Linked.cs"), "namespace DottedPaths;\npublic class Linked { }\n");
+        File.WriteAllText(Path.Combine(projectDirectory, "BannedSymbols.txt"), "T:System.Object\n");
+        File.WriteAllText(Path.Combine(projectDirectory, "custom.globalconfig"), "is_global = true\ndotnet_diagnostic.CA1822.severity = none\n");
+
+        string hintPath = typeof(TestAttribute).Assembly.Location;
+        string hintDirectory = Path.GetDirectoryName(hintPath)!;
+        string dottedHintPath = Path.Combine(hintDirectory, "..", Path.GetFileName(hintDirectory), Path.GetFileName(hintPath));
+
+        ProjectFixture.AddItem(projectPath, "Compile", "../Shared/Linked.cs");
+        ProjectFixture.AddItem(projectPath, "AdditionalFiles", "$(MSBuildProjectDirectory)/cfg/../BannedSymbols.txt");
+        ProjectFixture.AddItem(projectPath, "GlobalAnalyzerConfigFiles", "$(MSBuildProjectDirectory)/cfg/../custom.globalconfig");
+        ProjectFixture.AddItem(projectPath, "Reference", "nunit.framework", new Dictionary<string, string> { ["HintPath"] = dottedHintPath });
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        string[] buildalyzerPaths =
+        [
+            .. comparison.Buildalyzer.SourceFilePaths(),
+            .. comparison.Buildalyzer.AdditionalDocumentPaths(),
+            .. comparison.Buildalyzer.AnalyzerConfigDocumentPaths(),
+            .. comparison.Buildalyzer.MetadataReferencePaths(),
+        ];
+        buildalyzerPaths.Should().NotContain(path => path.Contains("..", StringComparison.Ordinal) || path.Contains("/./", StringComparison.Ordinal));
+        buildalyzerPaths.Should().Contain(path => path.EndsWith("Linked.cs", StringComparison.Ordinal))
+            .And.Contain(path => path.EndsWith("BannedSymbols.txt", StringComparison.Ordinal))
+            .And.Contain(path => path.EndsWith("custom.globalconfig", StringComparison.Ordinal))
+            .And.Contain(path => path.EndsWith("nunit.framework.dll", StringComparison.Ordinal));
+
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths());
+        comparison.Buildalyzer.AdditionalDocumentPaths().Should().BeEquivalentTo(comparison.MSBuild.AdditionalDocumentPaths());
+        comparison.Buildalyzer.AnalyzerConfigDocumentPaths().Should().BeEquivalentTo(comparison.MSBuild.AnalyzerConfigDocumentPaths());
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths());
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), comparison.BuildalyzerLog);
+    }
+
+    [Test]
+    public async Task Options_reconstructed_without_a_compiler_invocation_match_reference()
+    {
+        // When the build never reaches CoreCompile (issue #341) there is no compiler command line to
+        // parse, so the compilation and parse options are reconstructed from the evaluated properties by
+        // rebuilding the switches the Csc task would have emitted and handing them to Roslyn's parser.
+        // Driving Buildalyzer to a target short of CoreCompile exercises exactly that path, while
+        // MSBuildWorkspace performs its full design-time build: the options must still agree, and the
+        // preprocessor symbols must include the SDK's implicit framework defines that only a target adds.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "NoCompilerOptions",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .Property("OutputType", "Exe")
+                .Property("StartupObject", "NoCompilerOptions.Program")
+                .Property("Nullable", "enable")
+                .Property("LangVersion", "preview")
+                .Property("AllowUnsafeBlocks", "true")
+                .Property("CheckForOverflowUnderflow", "true")
+                .Property("Optimize", "true")
+                .Property("PlatformTarget", "x64")
+                .Property("WarningLevel", "7")
+                .Property("TreatWarningsAsErrors", "true")
+                .Property("WarningsAsErrors", "CS0168;1591")
+                .Property("WarningsNotAsErrors", "NU1605")
+                .Property("NoWarn", "CA1822;CS0219;1701")
+                .Property("DefineConstants", "$(DefineConstants);CUSTOM_SYMBOL")
+                .Property("Features", "strict;debug-determinism")
+                .Property("GenerateDocumentationFile", "true"),
+            Source("Program.cs", "namespace NoCompilerOptions;\npublic static class Program { public static void Main() { } }\n"));
+        fixture.Restore(projectPath);
+
+        // ResolveAssemblyReferences runs the SDK's reference resolution (so ReferencePath is captured for
+        // the fallback) but stops well short of CoreCompile.
+        Buildalyzer.Environment.EnvironmentOptions options = new();
+        options.TargetsToBuild.Clear();
+        options.TargetsToBuild.Add("ResolveAssemblyReferences");
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath, options: options);
+
+        comparison.BuildalyzerLog.Should().Contain("No compiler invocation was captured");
+        ProjectShape buildalyzer = comparison.Buildalyzer.Shape();
+        ProjectShape msbuild = comparison.MSBuild.Shape();
+        buildalyzer.CompilationOptions.Should().BeEquivalentTo(msbuild.CompilationOptions, comparison.BuildalyzerLog);
+        buildalyzer.ParseOptions.Should().BeEquivalentTo(msbuild.ParseOptions, comparison.BuildalyzerLog);
+        comparison.Buildalyzer.PreprocessorSymbols().Should().Contain(["NET", "NET10_0", "NETCOREAPP", "NET5_0_OR_GREATER", "NET10_0_OR_GREATER", "NETCOREAPP3_1_OR_GREATER", "CUSTOM_SYMBOL"]);
+
+        // The evaluated Compile items lack the build-generated sources (AssemblyInfo, GlobalUsings, ...),
+        // so the documents are a subset; the resolved references, though, are complete - including the
+        // targeting pack's facades (netstandard.dll, mscorlib.dll, System.dll, ...).
+        comparison.Buildalyzer.SourceFilePaths().Should().BeSubsetOf(comparison.MSBuild.SourceFilePaths())
+            .And.Contain(path => path.EndsWith("Program.cs", StringComparison.Ordinal));
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths(), comparison.BuildalyzerLog);
+        comparison.Buildalyzer.MetadataReferenceNames().Should().Contain(["netstandard.dll", "mscorlib.dll", "System.dll", "System.Xml.dll"]);
+    }
+
+    [Test]
+    public async Task Visual_basic_options_reconstructed_without_a_compiler_invocation_match_reference()
+    {
+        // The VB counterpart of Options_reconstructed_without_a_compiler_invocation_match_reference: the
+        // Option Strict/Explicit/Infer/Compare settings, root namespace, global imports and the CoreCompile-
+        // appended NoWarn ids must come out of the reconstructed vbc command line the way vbc reports them.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "VbNoCompilerOptions",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .Property("RootNamespace", "Custom.Vb")
+                .Property("OptionStrict", "On")
+                .Property("OptionExplicit", "Off")
+                .Property("OptionInfer", "On")
+                .Property("OptionCompare", "Text")
+                .Property("NoWarn", "BC40008;42024")
+                .Property("WarningsAsErrors", "BC42025")
+                .Property("DefineConstants", "MY_FLAG=True,MY_NUMBER=42")
+                .Property("GenerateDocumentationFile", "true"),
+            Source("Widget.vb", "Public Class Widget\nEnd Class\n"),
+            extension: ".vbproj");
+        fixture.Restore(projectPath);
+
+        Buildalyzer.Environment.EnvironmentOptions options = new();
+        options.TargetsToBuild.Clear();
+        options.TargetsToBuild.Add("ResolveAssemblyReferences");
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath, options: options);
+
+        comparison.BuildalyzerLog.Should().Contain("No compiler invocation was captured");
+        ProjectShape buildalyzer = comparison.Buildalyzer.Shape();
+        ProjectShape msbuild = comparison.MSBuild.Shape();
+        buildalyzer.CompilationOptions.Should().BeEquivalentTo(msbuild.CompilationOptions, comparison.BuildalyzerLog);
+        WithoutVbPreprocessorSymbols(buildalyzer).ParseOptions.Should().BeEquivalentTo(WithoutVbPreprocessorSymbols(msbuild).ParseOptions, comparison.BuildalyzerLog);
+
+        // FinalDefineConstants is composed at evaluation time, and the implicit framework defines are
+        // appended as "<SYMBOL>=-1" (see WithoutVbPreprocessorSymbols for why the reference cannot be
+        // the oracle for these).
+        buildalyzer.ParseOptions["PreprocessorSymbolValues"].Should().Contain("MY_FLAG=True").And.Contain("MY_NUMBER=42").And.Contain("NET10_0=-1").And.Contain("CONFIG=Debug");
+        comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths(), comparison.BuildalyzerLog);
+    }
+
     private static void AssertLoadedCleanly(WorkspaceComparison comparison)
     {
         comparison.MSBuildFailures.Should().BeEmpty();

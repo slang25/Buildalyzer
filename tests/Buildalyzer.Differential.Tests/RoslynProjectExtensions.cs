@@ -6,10 +6,11 @@ namespace Buildalyzer.Differential.Tests;
 /// <summary>
 /// Normalises the parts of a Roslyn <see cref="Project"/> that we want to compare across the
 /// two loaders. The <c>*Paths</c> helpers reduce each collection to an order-independent set of
-/// full paths so MSBuildWorkspace and Buildalyzer can be diffed directly with AwesomeAssertions'
-/// <c>BeEquivalentTo</c>; the <c>*Names</c> helpers give bare file names for "contains X" checks.
-/// Both loaders run against the same checkout, so full paths are the right equality: comparing
-/// names alone would hide a document or reference resolved from the wrong directory.
+/// paths - exactly as reported, not canonicalized - so MSBuildWorkspace and Buildalyzer can be diffed
+/// directly with AwesomeAssertions' <c>BeEquivalentTo</c>; the <c>*Names</c> helpers give bare file
+/// names for "contains X" checks. Both loaders run against the same checkout, so full paths are the
+/// right equality: comparing names alone would hide a document or reference resolved from the wrong
+/// directory, and canonicalizing would hide a "../" spelling of the right one.
 /// </summary>
 internal static class RoslynProjectExtensions
 {
@@ -67,11 +68,13 @@ internal static class RoslynProjectExtensions
     public static CSharpParseOptions CSharpParse(this Project project) =>
         (CSharpParseOptions)project.ParseOptions!;
 
+    // Deliberately not run through Path.GetFullPath: MSBuildWorkspace reports canonical full paths, and a
+    // "../" spelling of the same file on the Buildalyzer side is a divergence these tests exist to catch.
     private static string[] Paths(IEnumerable<string?> paths) =>
     [
         .. paths
             .Where(p => !string.IsNullOrEmpty(p))
-            .Select(p => Path.GetFullPath(p!))
+            .Select(p => p!)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
     ];
 

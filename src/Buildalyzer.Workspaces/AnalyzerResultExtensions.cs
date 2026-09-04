@@ -14,6 +14,7 @@ using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis.VisualBasic;
 using Buildalyzer.Construction;
 using Buildalyzer.IO;
+using Microsoft.Extensions.Logging;
 
 namespace Buildalyzer.Workspaces;
 
@@ -251,6 +252,19 @@ public static class AnalyzerResultExtensions
         // backfills the compiler-derived inputs when the structured task-input events weren't captured.
         string? projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
         CommandLineArguments? commandLine = ParseCommandLine(analyzerResult, languageName, projectDirectory);
+        if (commandLine is null)
+        {
+            // Say so out loud: the reconstructed project (see ShouldFallBackToItems) has no build-generated
+            // sources and options derived from evaluated properties, and a consumer comparing it against a
+            // full design-time build would otherwise have nothing to point at but the missing files.
+            analyzerResult.Manager.LoggerFactory?.CreateLogger(typeof(AnalyzerResultExtensions).FullName!).LogWarning(
+                "No compiler invocation was captured for {ProjectFile} ({TargetFramework}); the build did not reach CoreCompile, "
+                + "so the workspace project is reconstructed from the evaluated items and properties (build-generated sources, "
+                + "SDK analyzers and compiler-computed options may be missing). Succeeded: {Succeeded}.",
+                analyzerResult.ProjectFilePath,
+                string.IsNullOrEmpty(analyzerResult.TargetFramework) ? "no target framework" : analyzerResult.TargetFramework,
+                analyzerResult.Succeeded);
+        }
 
         ProjectId projectId = ProjectId.CreateNewId();
         Microsoft.CodeAnalysis.ProjectInfo projectInfo = GetProjectInfo(
@@ -515,8 +529,10 @@ public static class AnalyzerResultExtensions
     /// <summary>
     /// Produces the compilation and parse options. The primary source is the parsed compiler command line,
     /// which yields exactly the options the compiler used (and that MSBuildWorkspace reports). When no command
-    /// line was captured it falls back to reconstructing the options from evaluated MSBuild properties - a
-    /// best effort that is necessarily less complete.
+    /// line was captured (the build stopped before the compiler ran) the command line the compiler task would
+    /// have produced is reconstructed from the evaluated properties and parsed the same way
+    /// (<see cref="EvaluatedCommandLine"/>), so NoWarn/WarningsAsErrors, defines, language version, nullable,
+    /// signing, the module name and the rest follow the compiler's own semantics on that path too.
     /// </summary>
     private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateOptions(
         IAnalyzerResult analyzerResult, string languageName, string? projectDirectory, CommandLineArguments? commandLine)
@@ -542,12 +558,8 @@ public static class AnalyzerResultExtensions
     private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateRawOptions(
         IAnalyzerResult analyzerResult, string languageName, CommandLineArguments? commandLine)
     {
-        if (commandLine is not null)
-        {
-            return (commandLine.CompilationOptions, commandLine.ParseOptions);
-        }
-
-        return (CreateCompilationOptions(analyzerResult, languageName), CreateParseOptions(analyzerResult, languageName));
+        commandLine ??= EvaluatedCommandLine.Parse(analyzerResult, languageName, Path.GetDirectoryName(analyzerResult.ProjectFilePath));
+        return commandLine is null ? (null, null) : (commandLine.CompilationOptions, commandLine.ParseOptions);
     }
 
     /// <summary>
@@ -568,12 +580,6 @@ public static class AnalyzerResultExtensions
             .WithAssemblyIdentityComparer(DesktopAssemblyIdentityComparer.Default);
     }
 
-    // A documentation file (DocumentationFile / GenerateDocumentationFile) causes MSBuild to pass
-    // /doc to the compiler, which switches the parser into diagnosing doc comments.
-    private static bool GeneratesDocumentationFile(IAnalyzerResult analyzerResult) =>
-        !string.IsNullOrWhiteSpace(analyzerResult.GetProperty("DocumentationFile"))
-        || (bool.TryParse(analyzerResult.GetProperty("GenerateDocumentationFile"), out bool generate) && generate);
-
     private static IEnumerable<DocumentInfo> GetAnalyzerConfigDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {
         // The compiler receives these as absolute paths via /analyzerconfig:, including the
@@ -588,170 +594,6 @@ public static class AnalyzerResultExtensions
         }
 
         return GetDocuments(analyzerConfigFiles, projectId, Path.GetDirectoryName(analyzerResult.ProjectFilePath), GetChecksumAlgorithm(analyzerResult));
-    }
-
-    private static ParseOptions CreateParseOptions(IAnalyzerResult analyzerResult, string languageName)
-    {
-        // language-specific code is in local functions, to prevent assembly loading failures when assembly for the other language is not available
-        if (languageName == LanguageNames.CSharp)
-        {
-            ParseOptions CreateCSharpParseOptions()
-            {
-                CSharpParseOptions parseOptions = new CSharpParseOptions();
-
-                // Add any constants
-                parseOptions = parseOptions.WithPreprocessorSymbols(GetPreprocessorSymbols(analyzerResult));
-
-                // Get language version
-                string langVersion = analyzerResult.GetProperty("LangVersion");
-                if (!string.IsNullOrWhiteSpace(langVersion)
-                    && Microsoft.CodeAnalysis.CSharp.LanguageVersionFacts.TryParse(langVersion, out Microsoft.CodeAnalysis.CSharp.LanguageVersion languageVersion))
-                {
-                    parseOptions = parseOptions.WithLanguageVersion(languageVersion);
-                }
-
-                // A documentation file (/doc) makes the compiler diagnose doc comments.
-                if (GeneratesDocumentationFile(analyzerResult))
-                {
-                    parseOptions = parseOptions.WithDocumentationMode(DocumentationMode.Diagnose);
-                }
-
-                return parseOptions;
-            }
-
-            return CreateCSharpParseOptions();
-        }
-
-        if (languageName == LanguageNames.VisualBasic)
-        {
-            ParseOptions CreateVBParseOptions()
-            {
-                VisualBasicParseOptions parseOptions = new VisualBasicParseOptions();
-
-                // Get language version
-                string langVersion = analyzerResult.GetProperty("LangVersion");
-                Microsoft.CodeAnalysis.VisualBasic.LanguageVersion languageVersion = Microsoft.CodeAnalysis.VisualBasic.LanguageVersion.Default;
-                if (!string.IsNullOrWhiteSpace(langVersion)
-                    && Microsoft.CodeAnalysis.VisualBasic.LanguageVersionFacts.TryParse(langVersion, ref languageVersion))
-                {
-                    parseOptions = parseOptions.WithLanguageVersion(languageVersion);
-                }
-
-                if (GeneratesDocumentationFile(analyzerResult))
-                {
-                    parseOptions = parseOptions.WithDocumentationMode(DocumentationMode.Diagnose);
-                }
-
-                return parseOptions;
-            }
-
-            return CreateVBParseOptions();
-        }
-
-        return null;
-    }
-
-    private static CompilationOptions CreateCompilationOptions(IAnalyzerResult analyzerResult, string languageName)
-    {
-        string outputType = analyzerResult.GetProperty("OutputType");
-        OutputKind? kind = null;
-        switch (outputType)
-        {
-            case "Library":
-                kind = OutputKind.DynamicallyLinkedLibrary;
-                break;
-            case "Exe":
-                kind = OutputKind.ConsoleApplication;
-                break;
-            case "Module":
-                kind = OutputKind.NetModule;
-                break;
-            case "Winexe":
-                kind = OutputKind.WindowsApplication;
-                break;
-        }
-
-        if (kind.HasValue)
-        {
-            // language-specific code is in local functions, to prevent assembly loading failures when assembly for the other language is not available
-            if (languageName == LanguageNames.CSharp)
-            {
-                Enum.TryParse(analyzerResult.GetProperty("Nullable"), ignoreCase: true, out NullableContextOptions nullable);
-
-                CompilationOptions CreateCSharpCompilationOptions()
-                {
-                    CSharpCompilationOptions opts = new CSharpCompilationOptions(kind.Value, nullableContextOptions: nullable);
-
-                    if (bool.TryParse(analyzerResult.GetProperty("AllowUnsafeBlocks"), out bool allowUnsafe))
-                    {
-                        opts = opts.WithAllowUnsafe(allowUnsafe);
-                    }
-
-                    if (bool.TryParse(analyzerResult.GetProperty("CheckForOverflowUnderflow"), out bool checkOverflow))
-                    {
-                        opts = opts.WithOverflowChecks(checkOverflow);
-                    }
-
-                    if (bool.TryParse(analyzerResult.GetProperty("Deterministic"), out bool deterministic))
-                    {
-                        opts = opts.WithDeterministic(deterministic);
-                    }
-
-                    // PlatformTarget is the per-project compiler target; Platform from MSBuild is the
-                    // solution platform (typically "AnyCPU"). Prefer PlatformTarget, fall back to Platform.
-                    string platform = analyzerResult.GetProperty("PlatformTarget")
-                        ?? analyzerResult.GetProperty("Platform");
-                    if (!string.IsNullOrWhiteSpace(platform)
-                        && Enum.TryParse(platform, ignoreCase: true, out Platform platformValue))
-                    {
-                        opts = opts.WithPlatform(platformValue);
-                    }
-
-                    if (int.TryParse(analyzerResult.GetProperty("WarningLevel"), out int warningLevel))
-                    {
-                        opts = opts.WithWarningLevel(warningLevel);
-                    }
-
-                    if (bool.TryParse(analyzerResult.GetProperty("Optimize"), out bool optimize))
-                    {
-                        opts = opts.WithOptimizationLevel(optimize ? OptimizationLevel.Release : OptimizationLevel.Debug);
-                    }
-
-                    if (bool.TryParse(analyzerResult.GetProperty("TreatWarningsAsErrors"), out bool warningsAsErrors))
-                    {
-                        opts = opts.WithGeneralDiagnosticOption(warningsAsErrors ? ReportDiagnostic.Error : ReportDiagnostic.Default);
-                    }
-
-                    return opts;
-                }
-
-                return CreateCSharpCompilationOptions();
-            }
-
-            if (languageName == LanguageNames.VisualBasic)
-            {
-                CompilationOptions CreateVBCompilationOptions()
-                {
-                    VisualBasicCompilationOptions opts = new VisualBasicCompilationOptions(kind.Value);
-
-                    if (bool.TryParse(analyzerResult.GetProperty("Optimize"), out bool optimize))
-                    {
-                        opts = opts.WithOptimizationLevel(optimize ? OptimizationLevel.Release : OptimizationLevel.Debug);
-                    }
-
-                    if (bool.TryParse(analyzerResult.GetProperty("TreatWarningsAsErrors"), out bool warningsAsErrors))
-                    {
-                        opts = opts.WithGeneralDiagnosticOption(warningsAsErrors ? ReportDiagnostic.Error : ReportDiagnostic.Default);
-                    }
-
-                    return opts;
-                }
-
-                return CreateVBCompilationOptions();
-            }
-        }
-
-        return null;
     }
 
     private static IEnumerable<DocumentInfo> GetDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
@@ -820,25 +662,6 @@ public static class AnalyzerResultExtensions
         (analyzerResult.SourceFiles is null || analyzerResult.SourceFiles.Length == 0)
         && analyzerResult.Items.TryGetValue("Compile", out IProjectItem[] compileItems)
         && compileItems.Length > 0;
-
-    // Preprocessor symbols come from the compiler command line; when it never ran, recover them from the
-    // evaluated DefineConstants property (issue #341).
-    private static IEnumerable<string> GetPreprocessorSymbols(IAnalyzerResult analyzerResult)
-    {
-        if (analyzerResult.PreprocessorSymbols is { Length: > 0 } symbols)
-        {
-            return symbols;
-        }
-
-        if (ShouldFallBackToItems(analyzerResult)
-            && analyzerResult.GetProperty("DefineConstants") is { } defineConstants
-            && !string.IsNullOrWhiteSpace(defineConstants))
-        {
-            return defineConstants.Split([';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        }
-
-        return analyzerResult.PreprocessorSymbols ?? [];
-    }
 
     /// <summary>Resolves the <c>ItemSpec</c> of each item of the given type to a full path.</summary>
     private static string[] GetItemPaths(IAnalyzerResult analyzerResult, string itemType)
@@ -914,7 +737,7 @@ public static class AnalyzerResultExtensions
             return GetDocuments(GetItemPaths(analyzerResult, "AdditionalFiles"), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
         }
 
-        return GetDocuments(additionalFiles.Select(x => Path.Combine(projectDirectory!, x)), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
+        return GetDocuments(additionalFiles.Select(x => Path.GetFullPath(x, projectDirectory!)), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
     }
 
     private static IEnumerable<MetadataReference> GetMetadataReferences(IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)

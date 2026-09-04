@@ -204,6 +204,9 @@ internal static class ProjectShapeExtensions
     private static string Map<TKey, TValue>(IEnumerable<KeyValuePair<TKey, TValue>> map) where TKey : notnull =>
         string.Join(",", map.OrderBy(x => x.Key.ToString(), StringComparer.Ordinal).Select(x => $"{x.Key}={x.Value}"));
 
-    private static string? NormalizePath(string? path) =>
-        string.IsNullOrEmpty(path) ? path : Path.GetFullPath(path);
+    // Paths are compared exactly as each loader reports them. MSBuildWorkspace hands out canonical full paths
+    // (Roslyn's command-line parser resolves and collapses every input), and consumers key documents and
+    // references by that string, so an un-normalized "../" spelling of the same file is a real divergence -
+    // one that a Path.GetFullPath here would silently paper over.
+    private static string? NormalizePath(string? path) => path;
 }

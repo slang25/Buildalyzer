@@ -45,7 +45,16 @@ internal static class CompilerCommandBuilder
         }
 
         List<CompilerInputItem> sources = Items(taskInputs, "Sources");
-        List<CompilerInputItem> references = Items(taskInputs, "References");
+
+        // Every path the compiler was given is reported in canonical form (rooted, "." and ".." collapsed),
+        // as Roslyn's own command-line parser would report it. Items pulled in from package build logic
+        // routinely carry un-normalized segments (e.g. "<pkg>/build/../stylecop.json"), and consumers key
+        // documents and references by path, so the same file must not surface under two spellings. The
+        // references are normalized once here so the alias and interop maps below are keyed identically.
+        List<CompilerInputItem> references =
+        [
+            .. Items(taskInputs, "References").Select(r => r with { Spec = Resolve(projectDirectory, r.Spec).ToString() })
+        ];
 
         IEnumerable<string> embedded = Items(taskInputs, "EmbeddedFiles").Select(i => i.Spec);
         if (EmbedsAllSources(arguments))
@@ -91,9 +100,12 @@ internal static class CompilerCommandBuilder
     private static List<CompilerInputItem> Items(IReadOnlyDictionary<string, List<CompilerInputItem>> taskInputs, string key)
         => taskInputs.TryGetValue(key, out var items) ? items : [];
 
+    // Roots a compiler input against the project directory and canonicalizes it (Path.GetFullPath): the
+    // compiler and MSBuildWorkspace both report inputs this way, and an un-normalized ".." segment would
+    // otherwise leak into the workspace as a distinct path for the same file.
     [Pure]
     private static IOPath Resolve(string projectDirectory, string spec)
-        => IOPath.Parse(Path.IsPathRooted(spec) || projectDirectory.Length == 0 ? spec : Path.Combine(projectDirectory, spec));
+        => IOPath.Parse(Path.IsPathRooted(spec) || projectDirectory.Length == 0 ? spec : Path.Combine(projectDirectory, spec)).Root();
 
     // Csc/Vbc embed all source files when a bare "/embed" (or "-embed") switch is present.
     [Pure]

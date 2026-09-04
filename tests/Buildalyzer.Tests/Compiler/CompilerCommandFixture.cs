@@ -84,9 +84,37 @@ public class CompilerCommandFixture
 
         CompilerCommand? command = CompilerCommandBuilder.Build(CompilerLanguage.CSharp, "/proj", null, taskInputs);
 
-        command!.Aliases.Should().ContainKey("/refs/Aliased.dll");
-        command.Aliases["/refs/Aliased.dll"].Should().BeEquivalentTo("Foo", "Bar");
-        command.Aliases.Should().NotContainKey("/refs/Plain.dll");
+        // Reference paths are reported canonicalized (see Canonicalizes_input_paths), so the alias map is
+        // keyed by the same canonical path that MetadataReferences reports.
+        string aliased = Path.GetFullPath("/refs/Aliased.dll");
+        command!.MetadataReferences.Should().Contain(aliased);
+        command.Aliases.Should().ContainKey(aliased);
+        command.Aliases[aliased].Should().BeEquivalentTo("Foo", "Bar");
+        command.Aliases.Should().NotContainKey(Path.GetFullPath("/refs/Plain.dll"));
+    }
+
+    [Test]
+    public void Canonicalizes_input_paths()
+    {
+        // Items pulled in by package build logic routinely carry un-normalized segments, e.g. a
+        // "<pkg>/build/../stylecop.json" AdditionalFiles include; the compiler (and MSBuildWorkspace) report
+        // such inputs rooted and collapsed, and consumers key documents and references by path.
+        var taskInputs = Inputs(
+            ("Sources", Items("../Shared/Linked.cs", "./Program.cs")),
+            ("References", Items("/refs/../lib/System.dll")),
+            ("Analyzers", Items("/analyzers/./Some.Analyzer.dll")),
+            ("AdditionalFiles", Items("/pkg/build/../stylecop.json")),
+            ("AnalyzerConfigFiles", Items("cfg/../.editorconfig")),
+            ("EmbeddedFiles", Items("res/../extra.cs")));
+
+        CompilerCommand? command = CompilerCommandBuilder.Build(CompilerLanguage.CSharp, "/proj", null, taskInputs);
+
+        command!.SourceFiles.Should().BeEquivalentTo(Path.GetFullPath("/Shared/Linked.cs"), Path.GetFullPath("/proj/Program.cs"));
+        command.MetadataReferences.Should().BeEquivalentTo(Path.GetFullPath("/lib/System.dll"));
+        command.AnalyzerReferences.Should().BeEquivalentTo(Path.GetFullPath("/analyzers/Some.Analyzer.dll"));
+        command.AdditionalFiles.Should().BeEquivalentTo(Path.GetFullPath("/pkg/stylecop.json"));
+        command.AnalyzerConfigPaths.Should().BeEquivalentTo(Path.GetFullPath("/proj/.editorconfig"));
+        command.EmbeddedFiles.Should().BeEquivalentTo(Path.GetFullPath("/proj/extra.cs"));
     }
 
     [Test]

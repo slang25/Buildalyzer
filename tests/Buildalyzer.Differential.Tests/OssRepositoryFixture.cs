@@ -113,6 +113,10 @@ public sealed class OssRepositoryFixture : IDisposable
             startInfo.Environment.Remove("MSBUILD_EXE_PATH");
             startInfo.Environment.Remove("MSBuildExtensionsPath");
             startInfo.Environment.Remove("MSBuildSDKsPath");
+
+            // Worker nodes left behind by node reuse would keep the redirected output open and block
+            // WaitForExit until their idle timeout; make them exit with the restore.
+            startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         }
 
         using Process process = Process.Start(startInfo)

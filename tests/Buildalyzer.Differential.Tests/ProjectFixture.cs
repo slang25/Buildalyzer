@@ -85,6 +85,11 @@ public sealed class ProjectFixture : IDisposable
         startInfo.Environment.Remove("MSBuildExtensionsPath");
         startInfo.Environment.Remove("MSBuildSDKsPath");
 
+        // A multi-project restore spawns worker nodes that, with node reuse on, outlive the restore and
+        // inherit its redirected output, so WaitForExit would block on the pipe until the idle node exits
+        // (15 minutes). Make the nodes exit with the restore instead.
+        startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
         (int exitCode, string output, string error) = Run(startInfo, "dotnet restore");
         if (exitCode != 0)
         {

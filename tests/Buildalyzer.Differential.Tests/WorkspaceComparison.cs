@@ -48,7 +48,11 @@ public sealed class WorkspaceComparison : IDisposable
     /// Both loaders produce one Roslyn project per target framework, so a specific one must be
     /// chosen to compare like for like. Leave <c>null</c> for single-targeted projects.
     /// </param>
-    public static async Task<WorkspaceComparison> LoadAsync(string projectPath, string? targetFramework = null)
+    /// <param name="options">
+    /// Build options for the Buildalyzer side; <c>null</c> for the defaults. Used to drive Buildalyzer down a
+    /// specific path (e.g. targets that stop short of <c>CoreCompile</c>) while MSBuildWorkspace loads normally.
+    /// </param>
+    public static async Task<WorkspaceComparison> LoadAsync(string projectPath, string? targetFramework = null, Buildalyzer.Environment.EnvironmentOptions? options = null)
     {
         System.Diagnostics.Stopwatch msbuildTimer = System.Diagnostics.Stopwatch.StartNew();
         (Project msbuild, MSBuildWorkspace msbuildWorkspace, IReadOnlyList<string> msbuildFailures) =
@@ -57,7 +61,7 @@ public sealed class WorkspaceComparison : IDisposable
 
         System.Diagnostics.Stopwatch buildalyzerTimer = System.Diagnostics.Stopwatch.StartNew();
         (Project buildalyzer, IDisposable buildalyzerWorkspace, string buildalyzerLog) =
-            LoadWithBuildalyzer(projectPath, targetFramework);
+            LoadWithBuildalyzer(projectPath, targetFramework, options);
         buildalyzerTimer.Stop();
 
         LoadTimings.Record(TestContext.CurrentContext.Test.Name, buildalyzerTimer.Elapsed, msbuildTimer.Elapsed);
@@ -71,7 +75,7 @@ public sealed class WorkspaceComparison : IDisposable
             msbuildFailures);
     }
 
-    private static (Project Project, IDisposable Workspace, string Log) LoadWithBuildalyzer(string projectPath, string? targetFramework)
+    private static (Project Project, IDisposable Workspace, string Log) LoadWithBuildalyzer(string projectPath, string? targetFramework, Buildalyzer.Environment.EnvironmentOptions? options)
     {
         SafeStringWriter log = new();
         AnalyzerManager manager = new(new AnalyzerManagerOptions { LogWriter = log });
@@ -79,10 +83,19 @@ public sealed class WorkspaceComparison : IDisposable
             ?? throw new InvalidOperationException($"Buildalyzer could not load the project '{projectPath}'.");
 
         // For a single target the default GetWorkspace() picks Build().First(); for a multi-targeted
-        // project select the requested target's result and build a workspace from just that one.
-        AdhocWorkspace workspace = targetFramework is null
-            ? analyzer.GetWorkspace(addProjectReferences: true)
-            : analyzer.Build()[targetFramework].GetWorkspace(addProjectReferences: true);
+        // project (or custom build options) select the requested target's result and build a workspace
+        // from just that one.
+        AdhocWorkspace workspace;
+        if (targetFramework is null && options is null)
+        {
+            workspace = analyzer.GetWorkspace(addProjectReferences: true);
+        }
+        else
+        {
+            IAnalyzerResults results = options is null ? analyzer.Build() : analyzer.Build(options);
+            IAnalyzerResult result = targetFramework is null ? results.First() : results[targetFramework];
+            workspace = result.GetWorkspace(addProjectReferences: true);
+        }
 
         Project project = workspace.CurrentSolution.Projects.FirstOrDefault(p => PathsEqual(p.FilePath, projectPath))
             ?? throw new InvalidOperationException(

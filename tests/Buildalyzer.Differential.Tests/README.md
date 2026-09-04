@@ -39,7 +39,10 @@ they can be diffed with `BeEquivalentTo`: source documents, additional documents
 config documents, metadata references, analyzer references, project references and the
 projects in the whole loaded graph. Full paths rather than file names, because both loaders run
 against the same checkout and a name-only comparison would hide a document or reference
-resolved from the wrong directory. The `*Names()` variants exist for "contains X" checks.
+resolved from the wrong directory. The paths are compared exactly as each loader reports them
+(no `Path.GetFullPath` on the way in): MSBuildWorkspace hands out canonical paths, so a `../`
+spelling of the same file on the Buildalyzer side is a real divergence, not noise. The
+`*Names()` variants exist for "contains X" checks.
 
 `ProjectShape` goes further: `project.Shape()` flattens *everything* observable about a Roslyn
 project into plain values so one `BeEquivalentTo` reports every difference at once:
@@ -104,3 +107,8 @@ dotnet test --filter "FullyQualifiedName~Serilog"      # a single repository
 
 To add a repository, append a `Repo` record to `RealWorld_specs.Repositories` with its clone
 URL, a tag, the project to load and the framework to compare.
+
+`Aspire_specs.cs` is in the same category: it authors an Aspire AppHost solution (AppHost +
+referenced API) with the fixture and compares the whole solution graph, since AppHosts generate
+sources before `CoreCompile` and validate their project references with extra targets. It is
+explicit because restoring the AppHost pulls the Aspire dashboard and orchestration packages.
