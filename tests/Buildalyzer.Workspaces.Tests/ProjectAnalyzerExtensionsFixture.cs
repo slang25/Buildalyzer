@@ -22,6 +22,18 @@ public class ProjectAnalyzerExtensionsFixture
     }
 
     [Test]
+    public void Loads_Workspace_for_a_file_based_app()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+
+        using var workspace = ctx.Analyzer.GetWorkspace();
+
+        var project = workspace.CurrentSolution.Projects.Should().ContainSingle().Subject;
+        project.Documents.Should().Contain(d => d.Name == "app.cs");
+        project.MetadataReferences.Should().Contain(r => r.Display!.EndsWith("NodaTime.dll", StringComparison.Ordinal));
+    }
+
+    [Test]
     public void LoadsSolution()
     {
         // Given

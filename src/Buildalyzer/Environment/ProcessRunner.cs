@@ -8,6 +8,9 @@ internal sealed class ProcessRunner : IDisposable
     private readonly ILogger Logger;
     private readonly ProcessDataCollector Collector;
 
+    /// <summary>What to write to the process' standard input once it has started, if anything.</summary>
+    private readonly string? StandardInput;
+
     public int ExitCode => Process.ExitCode;
 
     public ProcessData Data => Collector.Data;
@@ -21,9 +24,11 @@ internal sealed class ProcessRunner : IDisposable
         string arguments,
         string workingDirectory,
         Dictionary<string, string?> environmentVariables,
-        ILoggerFactory? loggerFactory)
+        ILoggerFactory? loggerFactory,
+        string? standardInput = null)
     {
         Logger = loggerFactory?.CreateLogger<ProcessRunner>() ?? NullLogger<ProcessRunner>.Instance;
+        StandardInput = standardInput;
         Process = new Process
         {
             StartInfo =
@@ -34,7 +39,8 @@ internal sealed class ProcessRunner : IDisposable
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardError = true,
+                RedirectStandardInput = standardInput is not null
             },
 
             // Raises Process.Exited immediately instead of when checked via .WaitForExit() or .HasExited
@@ -63,6 +69,15 @@ internal sealed class ProcessRunner : IDisposable
         Process.Start();
         Process.BeginOutputReadLine();
         Process.BeginErrorReadLine();
+
+        // Closing the stream is part of the message: a process that reads until end of input (such as
+        // `dotnet run-api`) only responds and exits once it has seen it.
+        if (StandardInput is { } input)
+        {
+            using var writer = Process.StandardInput;
+            writer.WriteLine(input);
+        }
+
         Logger.LogDebug(
             "Started process {ProcessId}: \"{FileName}\" {Arguments}{NewLine}",
             Process.Id,

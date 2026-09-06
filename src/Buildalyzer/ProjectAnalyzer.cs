@@ -6,6 +6,7 @@ using Buildalyzer.Environment;
 using Buildalyzer.IO;
 using Buildalyzer.Logging;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using XenoAtom.MsBuildPipeLogger;
 
 namespace Buildalyzer;
@@ -25,6 +26,10 @@ public class ProjectAnalyzer : IProjectAnalyzer
     private readonly ConcurrentDictionary<string, string> _globalProperties = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly ConcurrentDictionary<string, string> _environmentVariables = new(StringComparer.OrdinalIgnoreCase);
+
+    // The project the SDK generated for a file-based app, or null for a project that exists on disk.
+    // It has to be on disk while MSBuild builds it, and only then; see VirtualProject.
+    private readonly VirtualProject? _virtualProject;
 
     public AnalyzerManager Manager { get; }
 
@@ -55,7 +60,18 @@ public class ProjectAnalyzer : IProjectAnalyzer
     {
         Manager = manager;
         Logger = Manager.LoggerFactory?.CreateLogger<ProjectAnalyzer>();
-        ProjectFile = new ProjectFile(path.ToString());
+
+        // A file-based app is a single .cs file with no project of its own, so the project to analyze is
+        // the one the SDK generates for it. Generating it means evaluating it, which happens before any
+        // BuildEnvironment exists (the project has to be parsed before it can be decided how to build
+        // it), so it runs against the default dotnet - see VirtualProject on the mismatch that allows.
+        _virtualProject = FileBasedApp.IsEntryPoint(path)
+            ? new VirtualProjectResolver(Manager.LoggerFactory).Resolve(path, EnvironmentOptions.DefaultDotnetExePath)
+            : null;
+
+        ProjectFile = _virtualProject is { } virtualProject
+            ? new ProjectFile(virtualProject)
+            : new ProjectFile(path.ToString());
         EnvironmentFactory = new EnvironmentFactory(Manager, ProjectFile);
         Project = project;
         string? solutionFilePath = manager.Solution?.Path;
@@ -434,6 +450,12 @@ public class ProjectAnalyzer : IProjectAnalyzer
         string? binaryLogSuffix = null)
     {
         using var cancellation = new CancellationTokenSource();
+
+        // A file-based app's project only exists on disk while it is being built; concurrent per-framework
+        // builds share the one file and it is removed once the last of them is done.
+        using var materialized = _virtualProject is { } virtualProject
+            ? virtualProject.Materialize(buildEnvironment.DotnetExePath, Logger ?? NullLogger<ProjectAnalyzer>.Instance)
+            : NullScope.Instance;
 
         using var pipeLogger = new AnonymousPipeLoggerServer(cancellation.Token);
         using var eventCollector = new BuildEventArgsCollector(pipeLogger);

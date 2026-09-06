@@ -96,6 +96,17 @@ Calling `GetProject()` again for the same project path will return the existing 
 
 To build the project, which triggers evaluation of the specified MSBuild tasks and targets but stops short of invoking the compiler by default in Buildalyzer, call `Build()`. This method has a number of overloads that lets you customize the build process by specifying target frameworks, build targets, and more.
 
+### File-based apps
+
+A [file-based app](https://learn.microsoft.com/dotnet/core/whats-new/dotnet-10/sdk#file-based-apps) - a single `.cs` file you run with `dotnet run app.cs` - has no project file. Pass the file itself and Buildalyzer analyzes the project the .NET SDK generates for it, directives (`#:package`, `#:sdk`, `#:property`) and all:
+
+```csharp
+AnalyzerManager manager = new AnalyzerManager();
+IProjectAnalyzer analyzer = manager.GetProject(@"C:\MyCode\app.cs");
+```
+
+This is the same rule Roslyn's `MSBuildWorkspace` uses: a path that exists, does not carry a project file extension, and either ends in `.cs` or starts with a `#!` shebang is a file-based app. It needs the .NET 10 SDK or later, and the generated project is written next to the entry point file (where the SDK itself would put it) for the duration of each build, then removed.
+
 ## Results
 
 Calling `ProjectAnalyzer.Build()` (or an overload) will return an `AnalyzerResults` object, which is a collection of `AnalyzerResult` objects for each of the target frameworks that were built. It will usually only contain a single `AnalyzerResult` unless the project is multi-targeted.

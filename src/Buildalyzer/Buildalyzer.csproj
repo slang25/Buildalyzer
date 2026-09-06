@@ -9,6 +9,7 @@
     <PackageReleaseNotes>
       <![CDATA[
 ToBeReleased
+- File-based apps (a single .cs file run with `dotnet run app.cs`) can be analyzed by passing the file to AnalyzerManager.GetProject; the project the .NET SDK generates for it is analyzed, and ProjectFile.EntryPointFilePath points back at the file. Requires the .NET 10 SDK or later.
 - Replaced MsBuildPipeLogger with XenoAtom.MsBuildPipeLogger.
 - Drop Buildalyzer.EmptyDisposable. (BREAKING)
 - Removed IAnalyzerManager.SolutionFilePath; use Solution.Path instead. (BREAKING)

@@ -1,0 +1,75 @@
+using System.IO;
+using Buildalyzer;
+using Buildalyzer.Construction;
+using Buildalyzer.Environment;
+using Buildalyzer.TestTools;
+
+namespace File_based_apps;
+
+public class Analyzer_Build
+{
+    [Test]
+    public void Analyzes_the_project_the_SDK_generates()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+
+        var results = ctx.Analyzer.Build(new EnvironmentOptions());
+
+        results.Should().NotBeEmpty(ctx.Log.ToString());
+        results.OverallSuccess.Should().BeTrue(ctx.Log.ToString());
+        results.SelectMany(r => r.SourceFiles).Select(Path.GetFileName)
+            .Should().Contain("app.cs", because: ctx.Log.ToString());
+        results.SelectMany(r => r.References).Select(Path.GetFileName)
+            .Should().Contain("NodaTime.dll", because: ctx.Log.ToString());
+    }
+
+    [Test]
+    public void Compiles_the_entry_point_file()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+
+        var results = ctx.Analyzer.Build(new EnvironmentOptions { DesignTime = false });
+
+        results.OverallSuccess.Should().BeTrue(ctx.Log.ToString());
+    }
+
+    [Test]
+    public void Leaves_no_project_behind()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+
+        ctx.Analyzer.Build(new EnvironmentOptions());
+
+        File.Exists(ctx.Analyzer.ProjectFile.Path).Should().BeFalse(ctx.Log.ToString());
+        ctx.Location.Directory!.GetFiles("*.csproj").Should().BeEmpty(ctx.Log.ToString());
+    }
+}
+
+public class Project_file
+{
+    [Test]
+    public void Points_back_at_the_entry_point()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+        var projectFile = (ProjectFile)ctx.Analyzer.ProjectFile;
+
+        projectFile.IsFileBasedApp.Should().BeTrue();
+        projectFile.EntryPointFilePath.Should().Be(ctx.Location.FullName);
+
+        // The name is the app's, not the generated project's: the SDK renamed the project it generates
+        // during .NET 10 (app.csproj => app.cs.csproj) and the project GUID is derived from the name.
+        projectFile.Name.Should().Be("app.cs");
+    }
+
+    [Test]
+    public void Carries_the_directives_of_the_entry_point()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+        var projectFile = ctx.Analyzer.ProjectFile;
+
+        projectFile.UsesSdk.Should().BeTrue();
+        projectFile.IsMultiTargeted.Should().BeFalse();
+        projectFile.PackageReferences.Should().ContainSingle()
+            .Which.Name.Should().Be("NodaTime");
+    }
+}

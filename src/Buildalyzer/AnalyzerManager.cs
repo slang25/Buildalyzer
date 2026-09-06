@@ -145,7 +145,10 @@ public class AnalyzerManager : IAnalyzerManager
     private IProjectAnalyzer? GetProject(IOPath path, ProjectInfo? project)
         => (Guard.NotDefault(path).File(), project) switch
         {
-            ({ Exists: true }, _) => _projects.GetOrAdd(path.ToString(), new ProjectAnalyzer(this, path, project)),
+            // The analyzer is created by the factory overload rather than passed in: constructing one
+            // reads (and, for a file-based app, asks the SDK to generate) the project, which is work a
+            // repeated lookup should not redo.
+            ({ Exists: true }, _) => _projects.GetOrAdd(path.ToString(), _ => new ProjectAnalyzer(this, path, project)),
             (_, not null) => null,
             _ => throw new ArgumentException($"The path {path} could not be found."),
         };
