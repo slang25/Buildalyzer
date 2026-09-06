@@ -1,3 +1,4 @@
+using System.Threading;
 using System.Threading.Tasks;
 using Buildalyzer.Environment;
 using XenoAtom.MsBuildPipeLogger;
@@ -8,9 +9,16 @@ namespace Buildalyzer.Logging;
 internal static class PipeLoggerDrain
 {
     /// <summary>
-    /// How long to keep reading after the build process has exited. The pipe is drained while the build
-    /// runs, so anything still in flight at that point is a tail; the bound is here so that a transport
-    /// which never reports the end of its stream costs a pause rather than the whole analysis.
+    /// How long to let the reader hand over what it already holds once the build process has exited.
+    /// Nothing can be written to the pipe after that point, so a reader with events still to deliver
+    /// reaches the end of its stream promptly.
+    /// </summary>
+    private static readonly TimeSpan SettleTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// How long to keep reading past the settle window. The pipe is drained while the build runs, so
+    /// anything still in flight at that point is a tail; the bound is here so that a transport which never
+    /// reports the end of its stream costs a pause rather than the whole analysis.
     /// </summary>
     private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(30);
 
@@ -18,25 +26,34 @@ internal static class PipeLoggerDrain
     private static readonly TimeSpan DisposeGrace = TimeSpan.FromSeconds(5);
 
     /// <summary>Reads every event <paramref name="server"/> receives while <paramref name="process"/> runs.</summary>
+    /// <param name="server">The pipe logger server to read.</param>
+    /// <param name="process">The build process writing to the pipe.</param>
+    /// <param name="received">The events received so far; tells a read that has stalled from one that is behind.</param>
     /// <remarks>
     /// The read happens on its own thread rather than on the caller's, so that waiting for the build
     /// process never depends on the pipe reaching the end of its stream. A build that exits without ever
     /// writing to the pipe leaves the server holding its own copy of the client handle, so the read would
     /// otherwise wait for an end of file that cannot arrive.
     /// </remarks>
-    public static void ReadUntilExit(IPipeLoggerServer server, ProcessRunner process)
+    public static void ReadUntilExit(IPipeLoggerServer server, ProcessRunner process, IReadOnlyCollection<PipeBuildEventArgs> received)
     {
-        var read = Task.Run(() =>
-        {
-            try
+        // A dedicated thread rather than a pool one: how soon the reader hands its events over decides
+        // whether the wait below reads as a stall, and that should not turn on how busy the host's pool is.
+        var read = Task.Factory.StartNew(
+            () =>
             {
-                server.ReadAll();
-            }
-            catch (ObjectDisposedException)
-            {
-                // The server was disposed to bring this read to an end.
-            }
-        });
+                try
+                {
+                    server.ReadAll();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The server was disposed to bring this read to an end.
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
         process.WaitForExit();
 
@@ -45,10 +62,10 @@ internal static class PipeLoggerDrain
         // ends the read on a transport that serves more than one connection.
         server.StopListening();
 
-        if (!read.Wait(DrainTimeout))
+        if (!read.Wait(SettleTimeout) && !Drained())
         {
-            // Disposing tears the transport down at once and discards whatever the reader has not handed
-            // over yet, which is why it is the backstop rather than the way this normally ends.
+            // Tearing the transport down discards whatever the reader has not handed over yet, which is why
+            // it is the backstop rather than the way this normally ends.
             server.Dispose();
             read.Wait(DisposeGrace);
         }
@@ -58,5 +75,14 @@ internal static class PipeLoggerDrain
             // Surface a read failure unwrapped, as reading in line did, rather than as an AggregateException.
             read.GetAwaiter().GetResult();
         }
+
+        // Whether the build wrote to the pipe at all is only worth asking once the settle window has
+        // passed: at the moment the process exits the reader may be holding events it has not dispatched
+        // yet, and reading "nothing received" as "nothing was written" there would throw them away. After
+        // the window, a reader that has delivered nothing is parked on a first read that cannot reach the
+        // end of the file - the server holds its own copy of the client's write handle until that read
+        // returns - so there is nothing left to drain and nothing for the teardown to discard. One that has
+        // delivered events may merely be behind, and gets the full drain.
+        bool Drained() => received.Count > 0 && read.Wait(DrainTimeout);
     }
 }

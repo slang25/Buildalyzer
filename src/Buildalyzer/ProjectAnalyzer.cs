@@ -470,20 +470,12 @@ public class ProjectAnalyzer : IProjectAnalyzer
             GetEffectiveEnvironmentVariables(buildEnvironment)!,
             Manager.LoggerFactory);
 
-        // If MSBuild exits without ever writing to the pipe (e.g. a startup failure), the server keeps its
-        // client handle open so the read never sees EOF. Dispose the logger on such an exit so the read ends
-        // as soon as the build has failed, rather than waiting out the drain timeout.
-        void OnProcessRunnerExited()
-        {
-            if (eventCollector.IsEmpty && processRunner.ExitCode != 0)
-            {
-                pipeLogger.Dispose();
-            }
-        }
-
-        processRunner.Exited += OnProcessRunnerExited;
         processRunner.Start();
-        PipeLoggerDrain.ReadUntilExit(pipeLogger, processRunner);
+
+        // The drain ends the read once MSBuild has gone, including the case where it exits without ever
+        // writing to the pipe (a startup failure): the server keeps its own copy of the client handle open
+        // there, so the read never sees the end of the file.
+        PipeLoggerDrain.ReadUntilExit(pipeLogger, processRunner, eventCollector);
         exitCode = processRunner.ExitCode;
         results.BuildEventArguments = [.. eventCollector];
 
