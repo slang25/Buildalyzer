@@ -85,14 +85,18 @@ public class Analyze_binary_log
         using Process process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Could not start 'dotnet build'.");
 
-        // Drain both pipes concurrently; a child that fills the one nobody is reading blocks forever.
+        // Drain both pipes concurrently; a child that fills the one nobody is reading blocks forever. Each
+        // stream gets its own buffer because the two callbacks run on different threads, and a StringBuilder
+        // shared between them is not safe to append to concurrently; they are joined after the build has
+        // exited, which is also when WaitForExit() has seen both readers reach the end of their stream.
         System.Text.StringBuilder output = new();
+        System.Text.StringBuilder error = new();
         process.OutputDataReceived += (_, e) => output.AppendLine(e.Data);
-        process.ErrorDataReceived += (_, e) => output.AppendLine(e.Data);
+        process.ErrorDataReceived += (_, e) => error.AppendLine(e.Data);
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         process.WaitForExit();
 
-        process.ExitCode.Should().Be(0, because: output.ToString());
+        process.ExitCode.Should().Be(0, because: output.Append(error).ToString());
     }
 }
