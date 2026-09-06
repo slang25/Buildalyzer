@@ -1034,6 +1034,40 @@ public class Differential_specs
     }
 
     [Test]
+    public async Task Linked_file_link_metadata_matches_reference()
+    {
+        using ProjectFixture fixture = new();
+        File.WriteAllText(Path.Combine(fixture.Root.FullName, "Shared.cs"), "namespace Shared;\npublic class Shared { }\n");
+        string projectPath = fixture.AddProject(
+            "ExplicitLinkProject",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Class1.cs", "namespace ExplicitLinkProject;\npublic class Class1 { }\n"));
+        ProjectFixture.AddItem(projectPath, "Compile", @"..\Shared.cs", new Dictionary<string, string>
+        {
+            // A forward slash is a directory separator on every platform, and both Buildalyzer and
+            // MSBuildWorkspace split a logical path on the platform's separators only.
+            ["Link"] = "Virtual/Renamed.cs",
+        });
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+        AssertLoadedCleanly(comparison);
+
+        // Link is the logical path the project files the document under: MSBuildWorkspace takes both the
+        // document's name and its folders from it, rather than from where the file physically lives.
+        DocumentIdentity(comparison.Buildalyzer, "Shared.cs")
+            .Should().Be(("Renamed.cs", "Virtual"))
+            .And.Be(DocumentIdentity(comparison.MSBuild, "Shared.cs"));
+    }
+
+    private static (string Name, string Folders) DocumentIdentity(Project project, string fileName)
+    {
+        Document document = project.Documents.Single(
+            d => string.Equals(Path.GetFileName(d.FilePath), fileName, StringComparison.OrdinalIgnoreCase));
+        return (document.Name, string.Join('/', document.Folders));
+    }
+
+    [Test]
     public async Task Additional_file_folders_match_reference()
     {
         using ProjectFixture fixture = new();

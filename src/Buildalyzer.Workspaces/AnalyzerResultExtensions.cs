@@ -593,7 +593,12 @@ public static class AnalyzerResultExtensions
             analyzerConfigFiles = [.. commandLine.AnalyzerConfigPaths];
         }
 
-        return GetDocuments(analyzerConfigFiles, projectId, Path.GetDirectoryName(analyzerResult.ProjectFilePath), GetChecksumAlgorithm(analyzerResult));
+        return GetDocuments(
+            analyzerConfigFiles,
+            projectId,
+            Path.GetDirectoryName(analyzerResult.ProjectFilePath),
+            GetChecksumAlgorithm(analyzerResult),
+            GetDocumentLinks(analyzerResult, "EditorConfigFiles"));
     }
 
     private static IEnumerable<DocumentInfo> GetDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
@@ -616,19 +621,33 @@ public static class AnalyzerResultExtensions
             sourceFiles = GetItemPaths(analyzerResult, "Compile");
         }
 
-        return GetDocuments(sourceFiles, projectId, Path.GetDirectoryName(analyzerResult.ProjectFilePath), GetChecksumAlgorithm(analyzerResult));
+        return GetDocuments(
+            sourceFiles,
+            projectId,
+            Path.GetDirectoryName(analyzerResult.ProjectFilePath),
+            GetChecksumAlgorithm(analyzerResult),
+            GetDocumentLinks(analyzerResult, "Compile"));
     }
 
     // Every input path becomes a document, whether or not it exists on disk, matching MSBuildWorkspace.
     // The text is loaded lazily on first read; a missing file then produces an empty document and a
     // standard Roslyn document-load failure instead of being silently dropped here (issue #345).
-    private static IEnumerable<DocumentInfo> GetDocuments(IEnumerable<string> files, ProjectId projectId, string? projectDirectory, SourceHashAlgorithm checksumAlgorithm) =>
-       files.Select(x => DocumentInfo.Create(
+    private static IEnumerable<DocumentInfo> GetDocuments(
+        IEnumerable<string> files,
+        ProjectId projectId,
+        string? projectDirectory,
+        SourceHashAlgorithm checksumAlgorithm,
+        IReadOnlyDictionary<string, string> links) =>
+       files.Select(x =>
+       {
+           (string name, IEnumerable<string> folders) = GetLogicalPath(x, projectDirectory, links);
+           return DocumentInfo.Create(
                DocumentId.CreateNewId(projectId),
-               Path.GetFileName(x),
-               folders: GetDocumentFolders(x, projectDirectory),
+               name,
+               folders: folders,
                loader: new LazyFileTextLoader(x, checksumAlgorithm),
-               filePath: x));
+               filePath: x);
+       });
 
     /// <summary>
     /// Reads a document's text from disk on first access, like MSBuildWorkspace's file loader, instead of
@@ -694,9 +713,53 @@ public static class AnalyzerResultExtensions
             _ => SourceHashAlgorithm.Sha256,
         };
 
-    // Mirrors MSBuildWorkspace: a document's logical folders are the directory of its path relative
-    // to the project directory. Files outside the project cone are auto-linked by the SDK and keep no
-    // folders, so anything whose relative path escapes the project directory yields none.
+    /// <summary>
+    /// Maps the physical path of every evaluated item of the given type that carries <c>Link</c> metadata to
+    /// that link - the logical path the item is filed under, as in
+    /// <c>&lt;Compile Include="../Shared.cs" Link="Virtual/Shared.cs" /&gt;</c>. The compiler is only ever
+    /// handed the physical path, so the link is read back from the evaluated items, which is where
+    /// MSBuildWorkspace takes it from too.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> GetDocumentLinks(IAnalyzerResult analyzerResult, string itemType)
+    {
+        if (!analyzerResult.Items.TryGetValue(itemType, out IProjectItem[] items) || items.Length == 0)
+        {
+            return ImmutableDictionary<string, string>.Empty;
+        }
+
+        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        Dictionary<string, string> links = new(IOPath.Comparer);
+        foreach (IProjectItem item in items)
+        {
+            if (item.Metadata.TryGetValue("Link", out string link) && !string.IsNullOrWhiteSpace(link))
+            {
+                links[Path.GetFullPath(item.ItemSpec, projectDirectory ?? ".")] = link;
+            }
+        }
+
+        return links;
+    }
+
+    // Mirrors MSBuildWorkspace: a document is filed under its logical path - the item's Link metadata when
+    // it has one, and the path relative to the project directory otherwise. The last segment of that path is
+    // the document's name and the ones before it are its folders, which is how a file that lives outside the
+    // project directory still shows up in the folder the project files it under.
+    private static (string Name, IEnumerable<string> Folders) GetLogicalPath(
+        string filePath, string? projectDirectory, IReadOnlyDictionary<string, string> links)
+        => links.TryGetValue(filePath, out string link) && SplitLogicalPath(link) is [.. var folders, var name]
+            ? (name, folders)
+            : (Path.GetFileName(filePath), GetDocumentFolders(filePath, projectDirectory));
+
+    // Split on the platform's separators, exactly as MSBuildWorkspace splits a logical path. That makes a
+    // backslash-separated link ("Virtual\Shared.cs", the form Visual Studio writes) a single name rather
+    // than a folder and a name when the analysis runs off Windows - which is what MSBuildWorkspace reports
+    // there too, and matching it is the point.
+    private static string[] SplitLogicalPath(string logicalPath)
+        => logicalPath.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+
+    // Mirrors MSBuildWorkspace: the logical folders of a document without a link are the directory of its
+    // path relative to the project directory. A file outside the project cone that carries no link of its
+    // own keeps no folders, so anything whose relative path escapes the project directory yields none.
     private static IEnumerable<string> GetDocumentFolders(string filePath, string? projectDirectory)
     {
         if (string.IsNullOrEmpty(projectDirectory))
@@ -725,19 +788,21 @@ public static class AnalyzerResultExtensions
         string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
         string[] additionalFiles = analyzerResult.AdditionalFiles ?? [];
 
+        IReadOnlyDictionary<string, string> links = GetDocumentLinks(analyzerResult, "AdditionalFiles");
+
         // Backfill from the command line's /additionalfile: switches when task inputs weren't captured.
         if (additionalFiles.Length == 0 && commandLine is not null)
         {
-            return GetDocuments(commandLine.AdditionalFiles.Select(f => f.Path), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
+            return GetDocuments(commandLine.AdditionalFiles.Select(f => f.Path), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult), links);
         }
 
         // Fall back to the evaluation-time AdditionalFiles items when the compiler never ran (issue #341).
         if (additionalFiles.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
-            return GetDocuments(GetItemPaths(analyzerResult, "AdditionalFiles"), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
+            return GetDocuments(GetItemPaths(analyzerResult, "AdditionalFiles"), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult), links);
         }
 
-        return GetDocuments(additionalFiles.Select(x => Path.GetFullPath(x, projectDirectory!)), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult));
+        return GetDocuments(additionalFiles.Select(x => Path.GetFullPath(x, projectDirectory!)), projectId, projectDirectory, GetChecksumAlgorithm(analyzerResult), links);
     }
 
     private static IEnumerable<MetadataReference> GetMetadataReferences(IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
