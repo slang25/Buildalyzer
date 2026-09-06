@@ -254,9 +254,9 @@ public static class AnalyzerResultExtensions
         CommandLineArguments? commandLine = ParseCommandLine(analyzerResult, languageName, projectDirectory);
         if (commandLine is null)
         {
-            // Say so out loud: the reconstructed project (see ShouldFallBackToItems) has no build-generated
-            // sources and options derived from evaluated properties, and a consumer comparing it against a
-            // full design-time build would otherwise have nothing to point at but the missing files.
+            // Warn that the project is reconstructed from evaluation data (see ShouldFallBackToItems): it has
+            // no build-generated sources and its options come from evaluated properties. Without the warning
+            // such a project is indistinguishable from a fully built one.
             analyzerResult.Manager.LoggerFactory?.CreateLogger(typeof(AnalyzerResultExtensions).FullName!).LogWarning(
                 "No compiler invocation was captured for {ProjectFile} ({TargetFramework}); the build did not reach CoreCompile, "
                 + "so the workspace project is reconstructed from the evaluated items and properties (build-generated sources, "

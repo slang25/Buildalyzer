@@ -1550,6 +1550,32 @@ public class Differential_specs
         comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths(), comparison.BuildalyzerLog);
     }
 
+    [Test]
+    public async Task Failing_pre_compile_task_still_reaches_the_compiler()
+    {
+        // A Compile item that duplicates one the SDK's default globs already include fails
+        // CheckForDuplicateItems (NETSDK1022), which runs before CoreCompile. Both loaders pass
+        // ContinueOnError=ErrorAndContinue, so the error is logged and the build carries on to
+        // CoreCompile: the compiler's real inputs and command line are captured instead of the
+        // pre-compile fallback, and the SDK-generated sources are present on both sides.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "DuplicateCompile",
+            p => p.Property("TargetFramework", TargetFramework).ItemCompile("Class1.cs"),
+            Source("Class1.cs", "namespace DuplicateCompile;\npublic class Class1 { }\n"));
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+
+        // MSBuildWorkspace reports the message without its code; Buildalyzer's log carries the code.
+        comparison.MSBuildFailures.Should().Contain(f => f.Contains("Duplicate 'Compile' items"));
+        comparison.BuildalyzerLog.Should().Contain("NETSDK1022");
+        comparison.BuildalyzerLog.Should().NotContain("No compiler invocation was captured");
+        comparison.Buildalyzer.SourceFileNames().Should().Contain("DuplicateCompile.AssemblyInfo.cs");
+        comparison.Buildalyzer.SourceFilePaths().Should().BeEquivalentTo(comparison.MSBuild.SourceFilePaths(), comparison.BuildalyzerLog);
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), comparison.BuildalyzerLog);
+    }
+
     private static void AssertLoadedCleanly(WorkspaceComparison comparison)
     {
         comparison.MSBuildFailures.Should().BeEmpty();
