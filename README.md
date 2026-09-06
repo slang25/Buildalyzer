@@ -140,18 +140,43 @@ If you want to change the configured properties before loading or compiling the 
 Be careful though, you may break the ability to load, compile, or interpret the project if you change the MSBuild properties.
 
 
-## Publish SingleFile
-If your application's output is a single file, you will need to provide the path to the following DLLs:
+## Single-file and Native AOT publishing
 
--XenoAtom.MsBuildPipeLogger.Logger.dll
--Buildalyzer.logger.dll
+Buildalyzer itself is trim- and Native-AOT-compatible: it runs MSBuild out of process and reads the
+results over a pipe, so its own code needs no reflection. Two things need attention when you publish
+your application as a single file or with `PublishAot`.
 
-Variable name: LoggerPathDll
+**The logger assemblies have to be real files.** MSBuild loads them in the build process, so they
+cannot live inside your single-file bundle or native image:
 
-See related issue [224](https://github.com/phmonte/Buildalyzer/issues/224)
-msbuild needs the physical address of the logger, for this reason it is not possible to use single file publish without informing this route.
+* `Buildalyzer.Logger.dll`
+* `XenoAtom.MsBuildPipeLogger.Logger.dll`
 
-Remembering that if the files are in the root where the project is running, it is not necessary to inform the path.
+If they sit next to your executable, Buildalyzer finds them and there is nothing to configure. If you
+deploy them somewhere else, point the `LoggerPathDll` environment variable at
+`Buildalyzer.Logger.dll`. See related issue [224](https://github.com/phmonte/Buildalyzer/issues/224).
+
+**A Native AOT publish does not copy them for you.** Both assemblies are compiled into the native
+image and no longer emitted as files, so ask for them explicitly in your application's project file:
+
+```xml
+<Target Name="PublishBuildalyzerLogger" AfterTargets="ComputeResolvedFilesToPublishList">
+  <ItemGroup>
+    <ResolvedFileToPublish Include="@(ReferenceCopyLocalPaths)"
+                           Condition="'%(Extension)' == '.dll' and ('%(Filename)' == 'Buildalyzer.Logger' or '%(Filename)' == 'XenoAtom.MsBuildPipeLogger.Logger')">
+      <RelativePath>%(Filename)%(Extension)</RelativePath>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </ResolvedFileToPublish>
+  </ItemGroup>
+</Target>
+```
+
+Two further caveats. `Buildalyzer.Workspaces` is **not** AOT-compatible - Roslyn composes its host
+services through MEF, which fails at runtime in a native image - so an AOT application can read
+project structure, source files, references and compiler command lines, but cannot create a Roslyn
+workspace. And an AOT-published application still shells out to `dotnet msbuild`, so the .NET SDK
+must be installed on the machine that runs it.
+
 ## Binary Log Files
 
 Buildalyzer can also read [MSBuild binary log files](http://msbuildlog.com/):

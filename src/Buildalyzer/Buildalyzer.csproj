@@ -5,10 +5,16 @@
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <PackageId>Buildalyzer</PackageId>
+    <!-- Buildalyzer runs the build out-of-process, so its own code needs no reflection: the library is
+         trim- and Native-AOT-safe and the analyzers keep it that way. Buildalyzer.Workspaces is not, and
+         is deliberately not marked (Roslyn composes its host services through MEF). -->
+    <IsAotCompatible>true</IsAotCompatible>
     <PackageValidationBaselineVersion>8.0.0</PackageValidationBaselineVersion>
     <PackageReleaseNotes>
       <![CDATA[
 ToBeReleased
+- Buildalyzer is now Native AOT and trimming compatible (IsAotCompatible), and can be used from an AOT-published command line app. The logger assemblies still have to be deployed as files next to the executable; see the readme. Buildalyzer.Workspaces is not AOT compatible, because Roslyn composes its host services through MEF.
+- The logger dll and the file-system case-sensitivity probe are located through the app's base directory when the assembly has no location (a single-file or Native AOT app), so single-file publishing no longer requires setting the LoggerPathDll environment variable when the logger dlls sit next to the executable.
 - File-based apps (a single .cs file run with `dotnet run app.cs`) can be analyzed by passing the file to AnalyzerManager.GetProject; the project the .NET SDK generates for it is analyzed, and ProjectFile.EntryPointFilePath points back at the file. Requires the .NET 10 SDK or later.
 - Replaced MsBuildPipeLogger with XenoAtom.MsBuildPipeLogger.
 - Drop Buildalyzer.EmptyDisposable. (BREAKING)

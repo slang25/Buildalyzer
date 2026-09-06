@@ -106,7 +106,25 @@ internal readonly struct IOPath : IEquatable<IOPath>, IFormattable
         ? new(p.Replace('\\', '/'))
         : Empty;
 
+    /// <summary>Probes whether the file system the app lives on is case sensitive.</summary>
+    /// <remarks>
+    /// Asks whether a file that is known to exist is still found when its path is upper-cased.
+    /// <see cref="System.Reflection.Assembly.Location" /> is empty in a single-file or Native AOT
+    /// app, so the running executable is probed there instead.
+    /// </remarks>
     [Pure]
+    [UnconditionalSuppressMessage(
+        "SingleFile",
+        "IL3000:Avoid accessing Assembly file path when publishing as a single file",
+        Justification = "The empty location of a single-file app is handled by falling back to the executable.")]
     private static bool InitCaseSensitivity()
-        => !new FileInfo(typeof(IOPath).Assembly.Location.ToUpperInvariant()).Exists;
+    {
+        var probe = typeof(IOPath).Assembly.Location is { Length: > 0 } assembly
+            ? assembly
+            : System.Environment.ProcessPath;
+
+        return probe is { Length: > 0 } file
+            ? !new FileInfo(file.ToUpperInvariant()).Exists
+            : !new DirectoryInfo(AppContext.BaseDirectory.ToUpperInvariant()).Exists;
+    }
 }
