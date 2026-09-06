@@ -62,12 +62,12 @@ internal static class PipeLoggerDrain
         // ends the read on a transport that serves more than one connection.
         server.StopListening();
 
-        if (!read.Wait(SettleTimeout) && !Drained())
+        if (!Completed(SettleTimeout) && !Drained())
         {
             // Tearing the transport down discards whatever the reader has not handed over yet, which is why
             // it is the backstop rather than the way this normally ends.
             server.Dispose();
-            read.Wait(DisposeGrace);
+            Completed(DisposeGrace);
         }
 
         if (read.IsCompleted)
@@ -83,6 +83,11 @@ internal static class PipeLoggerDrain
         // end of the file - the server holds its own copy of the client's write handle until that read
         // returns - so there is nothing left to drain and nothing for the teardown to discard. One that has
         // delivered events may merely be behind, and gets the full drain.
-        bool Drained() => received.Count > 0 && read.Wait(DrainTimeout);
+        bool Drained() => received.Count > 0 && Completed(DrainTimeout);
+
+        // Task.Wait would throw a read failure of its own accord, wrapped in an AggregateException, before
+        // the unwrapping above got the chance to; waiting for the task rather than on it leaves the failure
+        // unobserved until then.
+        bool Completed(TimeSpan timeout) => Task.WaitAny([read], timeout) == 0;
     }
 }
