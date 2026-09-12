@@ -68,7 +68,12 @@ public sealed class ProjectFixture : IDisposable
     /// Runs <c>dotnet restore</c> so that MSBuildWorkspace (which does not restore) has an
     /// assets file to perform its design-time build against.
     /// </summary>
-    public void Restore(string projectPath)
+    /// <param name="projectPath">The project to restore.</param>
+    /// <param name="allowFailure">
+    /// Whether a failing restore is expected: NuGet still writes the assets file when it reports an
+    /// error, which is exactly the state a test of a failed restore needs on disk.
+    /// </param>
+    public void Restore(string projectPath, bool allowFailure = false)
     {
         ProcessStartInfo startInfo = new(MSBuildRegistration.DotnetExePath)
         {
@@ -91,7 +96,7 @@ public sealed class ProjectFixture : IDisposable
         startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
 
         (int exitCode, string output, string error) = Run(startInfo, "dotnet restore");
-        if (exitCode != 0)
+        if (exitCode != 0 && !allowFailure)
         {
             throw new InvalidOperationException(
                 $"'dotnet restore' failed for {projectPath} (exit {exitCode}):{System.Environment.NewLine}{output}{System.Environment.NewLine}{error}");

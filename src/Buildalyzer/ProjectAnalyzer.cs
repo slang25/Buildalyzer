@@ -107,9 +107,9 @@ public class ProjectAnalyzer : IProjectAnalyzer
         // a single up-front restore with the project's own (outer) build environment. It
         // produces an assets file covering every framework, so one restore is enough.
         bool restore = environmentOptions.Restore && targetFrameworks.Any(t => t is not null);
-        if (restore && !Restore(EnvironmentFactory.GetBuildEnvironment(null, environmentOptions), results))
+        if (restore)
         {
-            return results;
+            Restore(EnvironmentFactory.GetBuildEnvironment(null, environmentOptions), results);
         }
 
         // Create a new build environment for each target; multiple targets build in parallel.
@@ -143,10 +143,7 @@ public class ProjectAnalyzer : IProjectAnalyzer
         // a single up-front restore covering every framework.
         if (buildEnvironment.Restore && targetFrameworks.Any(t => t is not null))
         {
-            if (!Restore(buildEnvironment, results))
-            {
-                return results;
-            }
+            Restore(buildEnvironment, results);
             buildEnvironment = buildEnvironment.WithRestore(false);
         }
 
@@ -162,12 +159,17 @@ public class ProjectAnalyzer : IProjectAnalyzer
     // use the -restore switch; the Restore target runs in this separate up-front invocation
     // that doesn't pin TargetFramework. Builds without a pinned target framework keep using
     // -restore in the build invocation itself, which already restores the outer build.
-    // Returns whether the restore succeeded; callers short-circuit on failure rather than
-    // running builds that would only fail with a misleading (e.g. NETSDK1005) error.
-    private bool Restore(BuildEnvironment buildEnvironment, AnalyzerResults results) =>
+    // A failed restore does not stop the build. NuGet writes the assets file even when it reports an
+    // error (a version conflict such as NU1109, say), and the SDK's ResolvePackageAssets then replays
+    // that error during the build - where ContinueOnError=ErrorAndContinue lets the build carry on to
+    // CoreCompile, so the compiler's real inputs are still captured. That is also what MSBuildWorkspace
+    // does, as it never restores at all. Stopping at the restore instead would leave the result with
+    // nothing but the restore's evaluation: no references, no analyzers, no generated sources. The
+    // failure is kept in OverallSuccess, and its errors are logged as they arrive over the pipe.
+    private void Restore(BuildEnvironment buildEnvironment, AnalyzerResults results) =>
         Restore(buildEnvironment, results, out _);
 
-    private bool Restore(BuildEnvironment buildEnvironment, AnalyzerResults results, out string[] targetFrameworks)
+    private void Restore(BuildEnvironment buildEnvironment, AnalyzerResults results, out string[] targetFrameworks)
     {
         AnalyzerResults restoreResults = [];
         using (WithSuffixedBinaryLogPaths("restore", true))
@@ -179,19 +181,16 @@ public class ProjectAnalyzer : IProjectAnalyzer
         // otherwise surface as an extra (empty) target framework result.
         results.Add([], restoreResults.OverallSuccess);
 
-        // On failure the caller stops before any build overwrites BuildEventArguments, so
-        // carry the restore's events across to surface the actual restore diagnostics.
         if (!restoreResults.OverallSuccess)
         {
-            results.BuildEventArguments = restoreResults.BuildEventArguments;
-            targetFrameworks = [];
-            return false;
+            Logger?.LogWarning(
+                "Restore failed for {ProjectFile}; building against the existing assets file so the compiler's inputs are still captured.",
+                ProjectFile.Path);
         }
 
         // The restore also evaluates the project, so read the real (condition-honored) target
         // frameworks from it - discovery for free, no separate evaluation build.
         targetFrameworks = EvaluatedTargetFrameworks(restoreResults);
-        return true;
     }
 
     // When invoking multiple builds in succession (per-TFM builds, or a restore preceding
@@ -282,14 +281,27 @@ public class ProjectAnalyzer : IProjectAnalyzer
         // Builds that pin a target framework can't restore themselves (see Restore).
         if (buildEnvironment.Restore && targetFramework is not null)
         {
-            if (!Restore(buildEnvironment, results))
-            {
-                return results;
-            }
+            Restore(buildEnvironment, results);
             buildEnvironment = buildEnvironment.WithRestore(false);
         }
 
-        return BuildTargets(buildEnvironment, targetFramework, buildEnvironment.TargetsToBuild, results);
+        BuildTargets(buildEnvironment, targetFramework, buildEnvironment.TargetsToBuild, results);
+
+        // An unpinned build restores in-line (-restore), and MSBuild runs no build target at all when
+        // that restore fails - the result is left with the restore's evaluation and no compiler
+        // invocation. Build again without the restore switch so the build itself runs (see Restore for
+        // why that works against the assets file a failed restore still writes). The retry merges into
+        // the same results, so the restore's failure stays in OverallSuccess. A build that failed for
+        // any other reason before reaching the compiler pays for one repeat of that failure.
+        if (buildEnvironment.Restore && !results.OverallSuccess && !results.Any(r => r.Command.Length > 0))
+        {
+            Logger?.LogWarning(
+                "The build of {ProjectFile} did not reach the compiler; retrying without restore against the existing assets file.",
+                ProjectFile.Path);
+            BuildTargets(buildEnvironment.WithRestore(false), targetFramework, buildEnvironment.TargetsToBuild, results);
+        }
+
+        return results;
     }
 
     /// <inheritdoc/>
@@ -357,10 +369,7 @@ public class ProjectAnalyzer : IProjectAnalyzer
         string[] targetFrameworks;
         if (restore)
         {
-            if (!Restore(environmentFor(null), results, out targetFrameworks))
-            {
-                return results;
-            }
+            Restore(environmentFor(null), results, out targetFrameworks);
         }
         else
         {

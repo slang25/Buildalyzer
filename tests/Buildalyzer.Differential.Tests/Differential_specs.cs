@@ -1610,6 +1610,51 @@ public class Differential_specs
         comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), comparison.BuildalyzerLog);
     }
 
+    [Test]
+    public async Task Failing_restore_still_reaches_the_compiler()
+    {
+        // Central Package Management with transitive pinning, where a transitive dependency is pinned
+        // below the version its parent requires, fails restore with NU1109. NuGet writes the assets file
+        // regardless, and MSBuildWorkspace - which never restores - builds against it: ResolvePackageAssets
+        // replays the error, ContinueOnError=ErrorAndContinue carries on, and CoreCompile runs. Buildalyzer's
+        // own -restore fails first, which stops MSBuild before any build target runs, so it has to build
+        // again without the restore: otherwise the project is reconstructed from the evaluation alone, which
+        // has no references, analyzers or generated sources at all.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "RestoreFailure",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .ItemPackageReference("Microsoft.Extensions.Logging"),
+            new Dictionary<string, string>
+            {
+                ["Class1.cs"] = "namespace RestoreFailure;\npublic class Class1 { }\n",
+                ["Directory.Packages.props"] = """
+                    <Project>
+                      <PropertyGroup>
+                        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+                        <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+                      </PropertyGroup>
+                      <ItemGroup>
+                        <PackageVersion Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+                        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.0" />
+                      </ItemGroup>
+                    </Project>
+                    """,
+            });
+        fixture.Restore(projectPath, allowFailure: true);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+
+        // MSBuildWorkspace reports the message without its code; Buildalyzer's log carries the code.
+        comparison.MSBuildFailures.Should().Contain(f => f.Contains("Detected package downgrade"));
+        comparison.BuildalyzerLog.Should().Contain("NU1109");
+        comparison.BuildalyzerLog.Should().NotContain("No compiler invocation was captured");
+        comparison.Buildalyzer.SourceFileNames().Should().Contain("RestoreFailure.AssemblyInfo.cs");
+        comparison.Buildalyzer.MetadataReferenceNames().Should().Contain(["Microsoft.Extensions.Logging.dll", "Microsoft.Extensions.Logging.Abstractions.dll"]);
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), comparison.BuildalyzerLog);
+    }
+
     private static void AssertLoadedCleanly(WorkspaceComparison comparison)
     {
         comparison.MSBuildFailures.Should().BeEmpty();
