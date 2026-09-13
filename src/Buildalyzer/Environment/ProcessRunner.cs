@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,6 +19,14 @@ internal sealed class ProcessRunner : IDisposable
     private Process Process { get; }
 
     public Action Exited { get; set; }
+
+    /// <summary>
+    /// Completes once the process has exited. Unlike <see cref="System.Diagnostics.Process.WaitForExitAsync"/> this does
+    /// not also wait for the redirected output streams to reach end of file (see <see cref="WaitForExit()"/>).
+    /// </summary>
+    public Task Exit => ExitSource.Task;
+
+    private readonly TaskCompletionSource<bool> ExitSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public ProcessRunner(
         string fileName,
@@ -142,8 +151,25 @@ internal sealed class ProcessRunner : IDisposable
         }
     }
 
+    /// <summary>Terminates the process and everything it started, if it is still running.</summary>
+    public void Kill()
+    {
+        try
+        {
+            if (!Process.HasExited)
+            {
+                Process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // The process exited in the meantime.
+        }
+    }
+
     private void OnExit(object? sender, EventArgs e)
     {
+        ExitSource.TrySetResult(true);
         Exited?.Invoke();
         Logger.LogDebug(
             "Process {Id} exited with code {ExitCode}{NewLine}",

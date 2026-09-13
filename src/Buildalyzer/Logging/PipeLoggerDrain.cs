@@ -55,6 +55,14 @@ internal static class PipeLoggerDrain
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
 
+        // Wait for the build process - unless the read fails first. Nobody drains the pipe after that, so
+        // once its buffer fills the logger's write blocks MSBuild, which then never exits: kill it and let
+        // the failure surface below rather than wait for an exit that cannot come.
+        if (Task.WaitAny([read, process.Exit]) == 0 && read.IsFaulted)
+        {
+            process.Kill();
+        }
+
         process.WaitForExit();
 
         // The build process has gone, so no further build submission can connect. This is a no-op on an
