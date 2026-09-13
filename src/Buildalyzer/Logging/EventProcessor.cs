@@ -110,6 +110,18 @@ internal sealed class EventProcessor : IDisposable
             return;
         }
 
+        // NuGet builds its restore graph by evaluating the project again under ExcludeRestorePackageImports,
+        // once per framework in TargetFrameworks - and it does that even for a project that pins a single
+        // TargetFramework over an imported TargetFrameworks list, restoring every listed framework. Those
+        // evaluations never build anything; each would otherwise surface as a phantom target-framework
+        // result with no compiler invocation behind it. The restore's own (outer) evaluation does not carry
+        // the property and is kept, as target-framework discovery reads TargetFrameworks from it.
+        if (IsRestoreGraphEvaluation(propertiesAndItems))
+        {
+            _resultsByContext[contextId] = null;
+            return;
+        }
+
         string tfm = propertiesAndItems?.Properties.TryGet("TargetFrameworkMoniker")?.StringValue ?? string.Empty;
 
         if (propertiesAndItems is { Properties: { }, Items: { } })
@@ -133,6 +145,11 @@ internal sealed class EventProcessor : IDisposable
         // than falling through to whichever result happens to be around.
         _resultsByContext[contextId] = null;
     }
+
+    private static bool IsRestoreGraphEvaluation(PropertiesAndItems? propertiesAndItems) =>
+        propertiesAndItems?.Properties.TryGet("ExcludeRestorePackageImports")?.StringValue is { } value
+        && bool.TryParse(value, out bool excluded)
+        && excluded;
 
     // WPF markup compilation compiles the primary project under a generated "<name>_<hash>_wpftmp" project
     // (GenerateTemporaryTargetAssembly), where <name> is the originating project's file name. "_wpftmp" is a

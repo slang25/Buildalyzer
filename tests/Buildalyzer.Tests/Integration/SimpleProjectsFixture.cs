@@ -386,6 +386,21 @@ public class SimpleProjectsFixture
     }
 
     [Test]
+    public void SingleTargetOverridingImportedPropsIsNotRebuiltPerFramework()
+    {
+        // Directory.Build.props declares <TargetFrameworks>, the project overrides it with a single
+        // <TargetFramework>, and the build fails before the compiler. The evaluation still carries the
+        // imported list, but this is an ordinary single-targeted build: it must not be retried pinned to
+        // frameworks the project never targets.
+        using var ctx = Context.ForProject("SdkSingleTargetOverridingProps/SdkSingleTargetOverridingProps.csproj");
+
+        IAnalyzerResults results = ctx.Analyzer.Build();
+
+        results.OverallSuccess.Should().BeFalse(ctx.Log.ToString());
+        results.TargetFrameworks.Should().BeEquivalentTo(["net8.0"], ctx.Log.ToString());
+    }
+
+    [Test]
     public void SolutionDirShouldEndWithDirectorySeparator()
     {
         // Given

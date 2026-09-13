@@ -387,11 +387,21 @@ public class ProjectAnalyzer : IProjectAnalyzer
     }
 
     // Reads the evaluated, semicolon-delimited TargetFrameworks MSBuild computed (conditions honored)
-    // from a build's results, so the frameworks we build are exactly the ones MSBuild would.
+    // from a build's results, so the frameworks we build are exactly the ones MSBuild would. Only the
+    // cross-targeting outer evaluation - the one with no TargetFramework of its own - is consulted: a
+    // project that overrides an imported <TargetFrameworks> (from Directory.Build.props, say) with its own
+    // <TargetFramework> still evaluates with both set, but it is an ordinary single-targeted build, and
+    // rebuilding it per listed framework would pin it to frameworks it never targets.
     private static string[] EvaluatedTargetFrameworks(IAnalyzerResults results)
     {
         foreach (IAnalyzerResult result in results)
         {
+            if (result.Properties.TryGetValue("TargetFramework", out string targetFramework)
+                && !string.IsNullOrWhiteSpace(targetFramework))
+            {
+                continue;
+            }
+
             if (result.Properties.TryGetValue("TargetFrameworks", out string value)
                 && !string.IsNullOrWhiteSpace(value))
             {
