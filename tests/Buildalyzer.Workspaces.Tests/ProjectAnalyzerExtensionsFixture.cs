@@ -24,7 +24,9 @@ public class ProjectAnalyzerExtensionsFixture
     [Test]
     public void Loads_Workspace_for_a_file_based_app()
     {
-        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+        // This suite's own copy of the app: the generated project is materialized next to the entry point
+        // and deleted after the build, and Buildalyzer.Tests builds its copy in a concurrently running host.
+        using var ctx = Context.ForProject("FileBasedAppWorkspace/app.cs");
 
         using var workspace = ctx.Analyzer.GetWorkspace();
 
