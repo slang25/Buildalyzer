@@ -182,6 +182,75 @@ public class Differential_specs
             .Should().BeEquivalentTo(comparison.MSBuild.ProjectReferencePaths());
     }
 
+    [Test(Description = "The project-reference graph does not depend on the order projects enter the workspace")]
+    public async Task Project_reference_graph_matches_reference_regardless_of_load_order()
+    {
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "Library",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Widget.cs", "namespace Library;\npublic class Widget { }\n"));
+        string appPath = fixture.AddProject(
+            "App",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Consumer.cs", "namespace App;\npublic class Consumer { public Library.Widget? Widget; }\n"));
+        ProjectFixture.AddProjectReference(appPath, libraryPath);
+        fixture.Restore(appPath);
+
+        // Reference: MSBuildWorkspace wires a consumer opened later to the dependency already open, so
+        // the dependency-first graph is the one to match. It has no consumer-first operation at all:
+        // opening the consumer pulls the dependency in with it, and opening the dependency afterwards
+        // is refused. Both are pinned here so a change in either shows up.
+        (string Project, ProjectReferenceShape[] References)[] expected = await OpenWithMSBuildWorkspaceAsync(libraryPath, appPath);
+        expected.Should().ContainSingle(p => p.Project == "App").Which.References
+            .Should().ContainSingle().Which.TargetName.Should().Be("Library");
+        await FluentActions.Awaiting(() => OpenWithMSBuildWorkspaceAsync(appPath, libraryPath))
+            .Should().ThrowAsync<ArgumentException>().WithMessage("*already part of the workspace*");
+
+        // Buildalyzer: results already in hand, added directly - the documented alternative to
+        // addProjectReferences - in both orders. Its API allows the consumer-first order MSBuildWorkspace
+        // refuses, so the outcome is held to the same graph: a consumer added before its dependency is
+        // wired to it when the dependency arrives.
+        SafeStringWriter log = new();
+        AnalyzerManager manager = new(new AnalyzerManagerOptions { LogWriter = log });
+        IAnalyzerResult library = manager.GetProject(libraryPath)!.Build().First();
+        IAnalyzerResult app = manager.GetProject(appPath)!.Build().First();
+
+        using AdhocWorkspace dependencyFirst = new();
+        library.AddToWorkspace(dependencyFirst);
+        app.AddToWorkspace(dependencyFirst);
+        Graph(dependencyFirst.CurrentSolution).Should().BeEquivalentTo(expected, log.ToString());
+
+        using AdhocWorkspace consumerFirst = new();
+        app.AddToWorkspace(consumerFirst);
+        library.AddToWorkspace(consumerFirst);
+        Graph(consumerFirst.CurrentSolution).Should().BeEquivalentTo(expected, log.ToString());
+
+        Compilation compilation = (await consumerFirst.CurrentSolution.Projects.Single(p => p.Name == "App").GetCompilationAsync())!;
+        compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty(log.ToString());
+    }
+
+    // Opens the projects one after another in a single MSBuildWorkspace and returns the resulting
+    // project-reference graph.
+    private static async Task<(string Project, ProjectReferenceShape[] References)[]> OpenWithMSBuildWorkspaceAsync(params string[] projectPaths)
+    {
+        using Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace workspace = Microsoft.CodeAnalysis.MSBuild.MSBuildWorkspace.Create();
+        List<string> failures = [];
+        using (workspace.RegisterWorkspaceFailedHandler(e => failures.Add(e.Diagnostic.Message)))
+        {
+            foreach (string projectPath in projectPaths)
+            {
+                await workspace.OpenProjectAsync(projectPath);
+            }
+        }
+
+        failures.Should().BeEmpty();
+        return Graph(workspace.CurrentSolution);
+    }
+
+    private static (string Project, ProjectReferenceShape[] References)[] Graph(Solution solution) =>
+        [.. solution.Shape().Select(p => (p.Name, p.ProjectReferences))];
+
     [Test]
     public async Task Implicit_sdk_analyzers_match_reference()
     {
