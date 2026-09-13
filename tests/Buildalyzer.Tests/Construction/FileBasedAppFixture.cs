@@ -7,6 +7,16 @@ namespace Buildalyzer.Tests.Construction;
 
 public class FileBasedAppFixture
 {
+    private DirectoryInfo _directory = null!;
+
+    [SetUp]
+    public void SetUp()
+        => _directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"buildalyzer-{Guid.NewGuid()}"));
+
+    [TearDown]
+    public void TearDown()
+        => _directory.Delete(recursive: true);
+
     [TestCase("app.cs")]
     [TestCase("APP.CS")]
     [TestCase("app.without-extension")]
@@ -28,13 +38,12 @@ public class FileBasedAppFixture
 
     [Test]
     public void Requires_the_file_to_exist()
-        => FileBasedApp.IsEntryPoint(IOPath.Parse(Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.cs")))
+        => FileBasedApp.IsEntryPoint(IOPath.Parse(Path.Combine(_directory.FullName, "missing.cs")))
             .Should().BeFalse();
 
-    private static IOPath Write(string name, string content)
+    private IOPath Write(string name, string content)
     {
-        var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"buildalyzer-{Guid.NewGuid()}"));
-        var path = Path.Combine(directory.FullName, name);
+        var path = Path.Combine(_directory.FullName, name);
         File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return IOPath.Parse(path);
     }
