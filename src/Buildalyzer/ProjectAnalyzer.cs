@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using Buildalyzer.Construction;
 using Buildalyzer.Environment;
@@ -436,19 +437,30 @@ public class ProjectAnalyzer : IProjectAnalyzer
             return;
         }
 
-        AnalyzerResults[] perFramework = targetFrameworks
-            .AsParallel()
-            .Select(targetFramework =>
-            {
-                BuildEnvironment buildEnvironment = environmentFor(targetFramework);
-                AnalyzerResults isolated = [];
+        AnalyzerResults[] perFramework;
+        try
+        {
+            perFramework = targetFrameworks
+                .AsParallel()
+                .Select(targetFramework =>
+                {
+                    BuildEnvironment buildEnvironment = environmentFor(targetFramework);
+                    AnalyzerResults isolated = [];
 
-                // Pass the binlog suffix explicitly rather than via the shared _binaryLogSuffix field, which
-                // these concurrent builds would otherwise race on.
-                BuildTargets(buildEnvironment, targetFramework, buildEnvironment.TargetsToBuild, isolated, binaryLogSuffix: targetFramework);
-                return isolated;
-            })
-            .ToArray();
+                    // Pass the binlog suffix explicitly rather than via the shared _binaryLogSuffix field, which
+                    // these concurrent builds would otherwise race on.
+                    BuildTargets(buildEnvironment, targetFramework, buildEnvironment.TargetsToBuild, isolated, binaryLogSuffix: targetFramework);
+                    return isolated;
+                })
+                .ToArray();
+        }
+        catch (AggregateException exception) when (exception.InnerExceptions.Count == 1)
+        {
+            // A single failing build surfaces its own exception, as it does when the frameworks build
+            // in-line, rather than PLINQ's wrapper around it.
+            ExceptionDispatchInfo.Capture(exception.InnerExceptions[0]).Throw();
+            throw;
+        }
 
         foreach (AnalyzerResults framework in perFramework)
         {
