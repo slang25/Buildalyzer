@@ -47,13 +47,21 @@ internal sealed class ProcessRunner : IDisposable
             EnableRaisingEvents = true,
         };
 
-        // Copy over environment variables
+        // Copy over environment variables. A null value unsets the variable in the child: it is removed
+        // rather than assigned, because on the .NET 8 runtime a null entry in StartInfo.Environment is
+        // passed to the child as an empty string (only .NET 9 and later treat it as absent).
         if (environmentVariables != null)
         {
             foreach (KeyValuePair<string, string> variable in environmentVariables)
             {
-                Process.StartInfo.Environment[variable.Key] = variable.Value;
-                Process.StartInfo.EnvironmentVariables[variable.Key] = variable.Value;
+                if (variable.Value is null)
+                {
+                    Process.StartInfo.Environment.Remove(variable.Key);
+                }
+                else
+                {
+                    Process.StartInfo.Environment[variable.Key] = variable.Value;
+                }
             }
         }
 
