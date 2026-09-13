@@ -261,6 +261,54 @@ public class ProjectAnalyzerExtensionsFixture
         diagnostics.Should().BeEmpty();
     }
 
+    [Test(Description = "A consumer added before its dependency is still wired to it, alias included")]
+    public async Task WiresProjectReferencesRegardlessOfOrder()
+    {
+        // Given - both results in hand, added directly (no addProjectReferences), consumer first.
+        SafeStringWriter log = new SafeStringWriter();
+        IProjectAnalyzer consumer = GetProjectAnalyzer(
+            @"projects\AliasedProjectReference\AliasedConsumer\AliasedConsumer.csproj", log);
+        IProjectAnalyzer library = GetProjectAnalyzer(
+            @"projects\AliasedProjectReference\AliasedLibrary\AliasedLibrary.csproj", log, (AnalyzerManager)consumer.Manager);
+        IAnalyzerResult consumerResult = consumer.Build().Single();
+        IAnalyzerResult libraryResult = library.Build().Single();
+
+        // When
+        using AdhocWorkspace workspace = new AdhocWorkspace();
+        Project consumerProject = consumerResult.AddToWorkspace(workspace)!;
+        Project libraryProject = libraryResult.AddToWorkspace(workspace)!;
+
+        // Then - the reference is wired from the consumer when the library arrives.
+        consumerProject = workspace.CurrentSolution.GetProject(consumerProject.Id)!;
+        ProjectReference reference = consumerProject.ProjectReferences.Should().ContainSingle().Subject;
+        reference.ProjectId.Should().Be(libraryProject.Id);
+        reference.Aliases.Should().BeEquivalentTo(["Lib"]);
+
+        Compilation compilation = await consumerProject.GetCompilationAsync();
+        compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Should().BeEmpty(log.ToString());
+    }
+
+    [Test(Description = "Static project references that are not real projects don't break closure discovery")]
+    public void IgnoresProjectReferencesThatDoNotExist()
+    {
+        // Given - the project file carries a conditioned reference to an absent file and one through an
+        // undefined property; MSBuild evaluates neither, but the XML scan that finds the closure sees both.
+        SafeStringWriter log = new SafeStringWriter();
+        IProjectAnalyzer analyzer = GetProjectAnalyzer(
+            @"projects\ConditionalProjectReference\ConditionalProjectReference.csproj", log);
+
+        // When
+        using AdhocWorkspace workspace = analyzer.GetWorkspace(addProjectReferences: true);
+
+        // Then - the real reference is present, the phantom ones are skipped rather than thrown on.
+        workspace.CurrentSolution.Projects.Select(p => p.Name)
+            .Should().BeEquivalentTo(["ConditionalProjectReference", "SdkNetStandardProject"], log.ToString());
+        workspace.CurrentSolution.Projects.Single(p => p.Name == "ConditionalProjectReference")
+            .ProjectReferences.Should().ContainSingle();
+    }
+
     [Test(Description = "A project reference resolved from an aliased assembly reference keeps its alias")]
     public async Task SupportsProjectReferenceAliases()
     {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -224,10 +225,16 @@ public static class AnalyzerResultExtensions
         return roots;
     }
 
+    // Fail-soft: a reference whose project file is not on disk is skipped rather than handed to
+    // GetProject, which throws for a missing file. The static XML scan that feeds the closure discovery
+    // keeps conditioned references and unexpanded "$(Property)" includes, neither of which is a real
+    // project, and a build's evaluated references can name a file that has since been removed.
     private static IProjectAnalyzer? ResolveReferenced(IAnalyzerManager manager, string referencePath) =>
         manager.Projects.TryGetValue(referencePath, out IProjectAnalyzer existing)
             ? existing
-            : manager.GetProject(referencePath);
+            : File.Exists(referencePath)
+                ? manager.GetProject(referencePath)
+                : null;
 
     // Adds a single target-framework result as its own Roslyn project and wires its project references by
     // resolved output-assembly path. Returns null when the language is unsupported, or the id of the
@@ -275,7 +282,16 @@ public static class AnalyzerResultExtensions
         }
 
         Solution solution = workspace.CurrentSolution.AddProject(projectInfo);
-        solution = WireProjectReferences(solution, projectId, analyzerResult, commandLine);
+
+        // Wire both directions so the result is independent of the order projects are added in: this
+        // project references the dependencies already present, and the consumers already present that
+        // resolved to this project's output reference it. The consumers' reference paths are remembered
+        // per workspace for that reverse pass.
+        ReferencePath[] referencePaths = [.. GetReferencePaths(analyzerResult, commandLine)];
+        solution = WireProjectReferences(solution, projectId, analyzerResult.TargetFramework, referencePaths);
+        ReferenceCache cache = ReferenceCaches.GetOrCreateValue(workspace);
+        cache.Set(projectId, analyzerResult.TargetFramework, referencePaths);
+        solution = WireReferencingProjects(solution, projectId, cache);
 
         if (!workspace.TryApplyChanges(solution))
         {
@@ -290,7 +306,7 @@ public static class AnalyzerResultExtensions
     // project reference. The reference is not also a metadata reference because a design-time build never
     // produces the output on disk (GetMetadataReferences filters by File.Exists). This is how
     // MSBuildWorkspace resolves the exact framework flavour of a multi-targeted dependency.
-    private static Solution WireProjectReferences(Solution solution, ProjectId projectId, IAnalyzerResult analyzerResult, CommandLineArguments? commandLine)
+    private static Solution WireProjectReferences(Solution solution, ProjectId projectId, string? consumerTargetFramework, IReadOnlyList<ReferencePath> references)
     {
         Dictionary<string, List<(ProjectId Id, string? TargetFramework)>> outputToProjects = BuildOutputIndex(solution, projectId);
         if (outputToProjects.Count == 0)
@@ -299,10 +315,10 @@ public static class AnalyzerResultExtensions
         }
 
         HashSet<ProjectId> referenced = [];
-        foreach (var reference in GetReferencePaths(analyzerResult, commandLine))
+        foreach (ReferencePath reference in references)
         {
             if (outputToProjects.TryGetValue(NormalizePath(reference.Reference), out List<(ProjectId Id, string? TargetFramework)> candidates)
-                && ChooseReferencedProject(candidates, analyzerResult.TargetFramework) is { } targetId
+                && ChooseReferencedProject(candidates, consumerTargetFramework) is { } targetId
                 && referenced.Add(targetId))
             {
                 // Carry the aliases and embed-interop flag over to the project reference. Turning a
@@ -317,6 +333,107 @@ public static class AnalyzerResultExtensions
         }
 
         return solution;
+    }
+
+    // The reverse of WireProjectReferences: every project already in the workspace whose resolved
+    // references name the newly added project's output gets a project reference to it. Without this pass
+    // a consumer added before its dependency - the documented pattern of adding results directly when they
+    // are already in hand - would silently miss the reference. The candidate choice is the forward pass's,
+    // so when the new project is the framework flavour a consumer would have picked over the sibling it
+    // was wired to earlier (only that sibling existed at the time), the consumer is rewired to it; the
+    // graph ends up as it would had the consumer been added last.
+    private static Solution WireReferencingProjects(Solution solution, ProjectId projectId, ReferenceCache cache)
+    {
+        if (solution.GetProject(projectId) is not { } added)
+        {
+            return solution;
+        }
+
+        HashSet<string> outputs = new(IOPath.Comparer);
+        foreach (string? output in new[] { added.OutputFilePath, added.OutputRefFilePath })
+        {
+            if (!string.IsNullOrEmpty(output))
+            {
+                outputs.Add(NormalizePath(output));
+            }
+        }
+
+        if (outputs.Count == 0)
+        {
+            return solution;
+        }
+
+        foreach ((ProjectId consumerId, string? consumerTargetFramework, ReferencePath[] references) in cache.Snapshot())
+        {
+            if (consumerId.Equals(projectId) || solution.GetProject(consumerId) is not { } consumer)
+            {
+                continue;
+            }
+
+            foreach (ReferencePath reference in references)
+            {
+                string normalized = NormalizePath(reference.Reference);
+                if (!outputs.Contains(normalized))
+                {
+                    continue;
+                }
+
+                if (!BuildOutputIndex(solution, consumerId).TryGetValue(normalized, out List<(ProjectId Id, string? TargetFramework)> candidates)
+                    || !projectId.Equals(ChooseReferencedProject(candidates, consumerTargetFramework)))
+                {
+                    continue;
+                }
+
+                // Drop a reference to a sibling flavour of the same output that only won because this
+                // flavour was not there yet.
+                foreach (ProjectReference existing in consumer.ProjectReferences)
+                {
+                    if (!existing.ProjectId.Equals(projectId) && candidates.Any(c => c.Id.Equals(existing.ProjectId)))
+                    {
+                        solution = solution.RemoveProjectReference(consumerId, existing);
+                    }
+                }
+
+                if (!consumer.ProjectReferences.Any(r => r.ProjectId.Equals(projectId)))
+                {
+                    solution = solution.AddProjectReference(
+                        consumerId,
+                        new ProjectReference(projectId, reference.Aliases, reference.EmbedInteropTypes));
+                }
+
+                consumer = solution.GetProject(consumerId)!;
+            }
+        }
+
+        return solution;
+    }
+
+    /// <summary>A resolved reference path with the alias and embed-interop metadata the compiler was given for it.</summary>
+    private readonly record struct ReferencePath(string Reference, ImmutableArray<string> Aliases, bool EmbedInteropTypes);
+
+    // The reference paths of every project added to a workspace, kept for as long as the workspace lives
+    // (the table holds it weakly) so that WireReferencingProjects can wire consumers added earlier.
+    private static readonly ConditionalWeakTable<Workspace, ReferenceCache> ReferenceCaches = new();
+
+    private sealed class ReferenceCache
+    {
+        private readonly Dictionary<ProjectId, (string? TargetFramework, ReferencePath[] References)> _entries = [];
+
+        public void Set(ProjectId projectId, string? targetFramework, ReferencePath[] references)
+        {
+            lock (_entries)
+            {
+                _entries[projectId] = (targetFramework, references);
+            }
+        }
+
+        public List<(ProjectId Id, string? TargetFramework, ReferencePath[] References)> Snapshot()
+        {
+            lock (_entries)
+            {
+                return [.. _entries.Select(e => (e.Key, e.Value.TargetFramework, e.Value.References))];
+            }
+        }
     }
 
     // Every project claiming an output path is kept as a candidate: a multi-targeted project that sets
@@ -421,7 +538,7 @@ public static class AnalyzerResultExtensions
     // flag the compiler was given for it. Unlike GetMetadataReferences these are NOT filtered by File.Exists:
     // a project reference resolves to a dependency's output that a design-time build never writes to disk,
     // and that (nonexistent) path is exactly what we match on.
-    private static IEnumerable<(string Reference, ImmutableArray<string> Aliases, bool EmbedInteropTypes)> GetReferencePaths(
+    private static IEnumerable<ReferencePath> GetReferencePaths(
         IAnalyzerResult analyzerResult,
         CommandLineArguments? commandLine)
     {
@@ -433,7 +550,7 @@ public static class AnalyzerResultExtensions
         if (references.Length == 0 && commandLine is not null)
         {
             return commandLine.MetadataReferences
-                .Select(r => (r.Reference, r.Properties.Aliases, r.Properties.EmbedInteropTypes));
+                .Select(r => new ReferencePath(r.Reference, r.Properties.Aliases, r.Properties.EmbedInteropTypes));
         }
 
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
@@ -441,10 +558,10 @@ public static class AnalyzerResultExtensions
             references = GetItemPaths(analyzerResult, "ReferencePath");
         }
 
-        return references.Select(reference => (
-            Reference: reference,
-            Aliases: analyzerResult.ReferenceAliases.GetValueOrDefault(reference),
-            EmbedInteropTypes: analyzerResult.ReferencesEmbeddingInteropTypes.Contains(reference)));
+        return references.Select(reference => new ReferencePath(
+            reference,
+            analyzerResult.ReferenceAliases.GetValueOrDefault(reference),
+            analyzerResult.ReferencesEmbeddingInteropTypes.Contains(reference)));
     }
 
     // Whether the project declares itself multi-targeted. Reads the evaluated TargetFrameworks property of
