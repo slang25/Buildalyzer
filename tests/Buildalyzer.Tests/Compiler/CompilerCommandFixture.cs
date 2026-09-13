@@ -27,6 +27,23 @@ public class CompilerCommandFixture
         tokens.Should().Contain("Program.cs");
     }
 
+    [Test(Description = "The vendored tokenizer keeps Roslyn's quote handling")]
+    public void Tokenizes_quotes_like_roslyn()
+    {
+        // An argument wrapped in one pair of quotes loses them; quotes inside an argument stay for the
+        // compiler's own parser to interpret; an empty quoted argument is dropped.
+        const string commandLine =
+            "csc.exe \"C:\\a b\\Program.cs\" /define:CONFIG=\"Debug\",DEBUG=-1 \"\" /out:\"C:\\a b\\x.dll\"";
+
+        string[] tokens = [.. RoslynCommandLineParser.SplitCommandLineIntoArguments(commandLine, removeHashComments: true)];
+
+        tokens.Should().Equal(
+            "csc.exe",
+            "C:\\a b\\Program.cs",
+            "/define:CONFIG=\"Debug\",DEBUG=-1",
+            "/out:\"C:\\a b\\x.dll\"");
+    }
+
     [Test]
     public void Builds_csharp_command_from_task_parameters()
     {

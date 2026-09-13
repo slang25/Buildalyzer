@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using Buildalyzer.IO;
 
 namespace Buildalyzer;
@@ -166,9 +167,58 @@ internal static class CompilerCommandBuilder
             string option = arg[1..colon];
             if (option.IsMatch("define") || option.IsMatch("d"))
             {
-                yield return arg[(colon + 1)..];
+                yield return RemoveQuotesAndSlashes(arg[(colon + 1)..]);
             }
         }
+    }
+
+    // A switch value may be quoted as a whole - Vbc writes /define:"CONFIG=\"Debug\",DEBUG=-1" - and the
+    // tokenizer keeps quotes inside an argument. Drop the unescaped quotes and unescape the \" sequences
+    // the way the compiler's own parser (Roslyn's RemoveQuotesAndSlashes) does before reading the value.
+    [Pure]
+    private static string RemoveQuotesAndSlashes(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        int i = 0;
+        while (i < value.Length)
+        {
+            char current = value[i];
+            if (current == '\\')
+            {
+                int slashes = 0;
+                while (i < value.Length && value[i] == '\\')
+                {
+                    slashes++;
+                    i++;
+                }
+
+                if (i < value.Length && value[i] == '"')
+                {
+                    // An odd run of backslashes escapes the quote; the rest are literal in halves.
+                    builder.Append('\\', slashes / 2);
+                    if (slashes % 2 == 1)
+                    {
+                        builder.Append('"');
+                        i++;
+                    }
+                }
+                else
+                {
+                    builder.Append('\\', slashes);
+                }
+            }
+            else if (current == '"')
+            {
+                i++;
+            }
+            else
+            {
+                builder.Append(current);
+                i++;
+            }
+        }
+
+        return builder.ToString();
     }
 
     [Pure]

@@ -29,8 +29,9 @@ internal static class RoslynCommandLineParser
 
     /// <summary>
     /// Splits a command line into individual arguments using the same quoting/backslash rules as Roslyn's
-    /// command-line parser. Surrounding quotes are removed; backslashes are preserved except where they
-    /// escape a quote.
+    /// command-line parser (a verbatim copy of its tokenizer). An argument enclosed in a single pair of
+    /// quotes has them removed, other quotes are kept, empty arguments are dropped, and backslashes are
+    /// preserved except where they escape a quote.
     /// </summary>
     [Pure]
     internal static IEnumerable<string> SplitCommandLineIntoArguments(string commandLine, bool removeHashComments)
@@ -90,6 +91,7 @@ internal static class RoslynCommandLineParser
                         break;
 
                     case '"':
+                        builder.Append(current);
                         quoteCount++;
                         i++;
                         break;
@@ -101,7 +103,19 @@ internal static class RoslynCommandLineParser
                 }
             }
 
-            yield return builder.ToString();
+            // Only an argument enclosed in a single pair of quotes has them removed; quotes inside an
+            // argument (/define:CONFIG="Debug") are kept for the compiler's own parser to interpret, as
+            // Roslyn does.
+            if (quoteCount == 2 && builder[0] == '"' && builder[^1] == '"')
+            {
+                builder.Remove(0, 1);
+                builder.Remove(builder.Length - 1, 1);
+            }
+
+            if (builder.Length > 0)
+            {
+                yield return builder.ToString();
+            }
         }
     }
 }
