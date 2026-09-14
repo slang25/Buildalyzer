@@ -196,17 +196,32 @@ public class AnalyzerResult : IAnalyzerResult
     }
 
     /// <summary>
-    /// Records an item group captured during the build (e.g. the resolved <c>ReferencePath</c> produced by
-    /// <c>ResolveAssemblyReference</c>). Used to reconstruct workspace state when the build fails before the
-    /// compiler runs (issue #341); ignored on successful builds, where the compiler task inputs are richer.
+    /// Records an item group a task produced during the build: the <c>ReferencePath</c> resolved by
+    /// <c>ResolveAssemblyReference</c>, and the <c>Analyzer</c>/<c>ResolvedAnalyzers</c> the SDK's
+    /// targeting-pack and package resolution produce. Used to reconstruct workspace state when the build fails
+    /// before the compiler runs (issue #341); ignored on successful builds, where the compiler task inputs are
+    /// richer.
     /// </summary>
+    /// <remarks>
+    /// Appended to the evaluated items of the same type, as MSBuild itself appends a task's output items to the
+    /// item group: <c>Analyzer</c> holds the SDK's own analyzers at evaluation and gains the targeting packs'
+    /// when <c>ResolveTargetingPackAssets</c> runs. An item already present by spec is not repeated.
+    /// </remarks>
     internal void AddItems(string itemType, IEnumerable<IProjectItem> items)
     {
-        IProjectItem[] array = [.. items];
-        if (array.Length > 0)
+        IProjectItem[] added = [.. items];
+        if (added.Length == 0)
         {
-            _items[itemType] = array;
+            return;
         }
+
+        if (_items.TryGetValue(itemType, out IProjectItem[]? existing) && existing.Length > 0)
+        {
+            HashSet<string> seen = new(existing.Select(item => item.ItemSpec), IOPath.Comparer);
+            added = [.. existing, .. added.Where(item => seen.Add(item.ItemSpec))];
+        }
+
+        _items[itemType] = added;
     }
 
     internal void ProcessCscCommandLine(string? commandLine, bool coreCompile)

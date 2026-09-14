@@ -89,16 +89,17 @@ public class BuildalyzerLogger : PipeLogger
             return;
         }
 
-        // Forward the compiler task's resolved inputs (captured inside CoreCompile) and the references
-        // that ResolveAssemblyReference resolved before it - the latter so the workspace can still be
-        // reconstructed when the build fails before CoreCompile runs (issue #341).
+        // Forward the compiler task's resolved inputs (captured inside CoreCompile) and the item groups the
+        // SDK resolves before it - ResolveAssemblyReference's ReferencePath, and the analyzers that
+        // ResolveTargetingPackAssets (into Analyzer) and ResolvePackageAssets (into ResolvedAnalyzers) produce -
+        // so the workspace can still be reconstructed when the build fails before CoreCompile runs (issue #341).
         bool compilerInput = _coreCompileContexts.Contains(ProjectContextId(parameter))
             && parameter.Kind == TaskParameterMessageKind.TaskInput
             && IsCompilerInput(parameter.ItemType);
-        bool resolvedReferences = parameter.Kind == TaskParameterMessageKind.TaskOutput
-            && string.Equals(parameter.ItemType, "ReferencePath", StringComparison.OrdinalIgnoreCase);
+        bool resolvedBeforeCompile = parameter.Kind == TaskParameterMessageKind.TaskOutput
+            && IsResolvedBeforeCompile(parameter.ItemType);
 
-        if (compilerInput || resolvedReferences)
+        if (compilerInput || resolvedBeforeCompile)
         {
             Pipe!.Write(e);
         }
@@ -124,6 +125,14 @@ public class BuildalyzerLogger : PipeLogger
     // recovered from the compiler command line instead.
     private static bool IsCompilerInput(string? itemType) => itemType is
         "Sources" or "References" or "Analyzers" or "AdditionalFiles" or "AnalyzerConfigFiles" or "EmbeddedFiles";
+
+    // The item groups the SDK's resolution tasks output ahead of CoreCompile, kept so a build that fails before
+    // the compiler runs still yields its resolved references and analyzers. MSBuild item names are
+    // case-insensitive, unlike the task parameter names above.
+    private static bool IsResolvedBeforeCompile(string? itemType) =>
+        string.Equals(itemType, "ReferencePath", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(itemType, "Analyzer", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(itemType, "ResolvedAnalyzers", StringComparison.OrdinalIgnoreCase);
 
     private void TargetStarted(object sender, TargetStartedEventArgs e)
     {

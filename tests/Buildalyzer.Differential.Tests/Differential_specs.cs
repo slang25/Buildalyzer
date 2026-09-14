@@ -945,6 +945,10 @@ public class Differential_specs
         project.MetadataReferenceNames().Should().Contain("System.Runtime.dll", log.ToString());
         project.PreprocessorSymbols().Should().Contain("CUSTOM_CONSTANT", log.ToString());
 
+        // So are the analyzers the SDK resolved before the failure - the targeting pack's generators are
+        // added by ResolveTargetingPackAssets, not at evaluation - and not only the evaluated ones.
+        project.AnalyzerReferenceNames().Should().Contain("System.Text.Json.SourceGeneration.dll", log.ToString());
+
         // The same recovery has to be reachable from the analyzer- and manager-level entry points, which
         // build the project themselves rather than being handed a result.
         using AdhocWorkspace fromAnalyzer = analyzer.GetWorkspace();
@@ -954,6 +958,33 @@ public class Differential_specs
         using AdhocWorkspace fromManager = manager.GetWorkspace();
         Project managerProject = fromManager.CurrentSolution.Projects.Single();
         managerProject.SourceFileNames().Should().Contain("Class1.cs", log.ToString());
+    }
+
+    [Test]
+    public async Task Analyzers_resolved_before_a_pre_compile_failure_match_reference()
+    {
+        // When the build stops before the compiler, MSBuildWorkspace reads the Analyzer items as they stood at
+        // the failure, so the targeting-pack and package analyzers the SDK resolved by then are all present.
+        // Buildalyzer must recover the same set from the resolution tasks' outputs, not just the evaluated
+        // items (which hold only the SDK's own analyzers).
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "AnalyzersBeforeFailure",
+            p => p
+                .Property("TargetFramework", TargetFramework)
+                .ItemPackageReference("Riok.Mapperly", "4.3.1")
+                .Target(name: "FailBeforeCompile", beforeTargets: "CoreCompile")
+                .TaskError(text: "Simulated failure before Csc (#341)"),
+            Source("Class1.cs", "namespace AnalyzersBeforeFailure;\npublic class Class1 { }\n"));
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+
+        comparison.MSBuildFailures.Should().ContainSingle(f => f.Contains("Simulated failure before Csc"));
+        comparison.BuildalyzerLog.Should().Contain("No compiler invocation was captured");
+        comparison.Buildalyzer.AnalyzerReferenceNames().Should().Contain(["Riok.Mapperly.dll", "System.Text.Json.SourceGeneration.dll"]);
+        comparison.Buildalyzer.AnalyzerReferencePaths()
+            .Should().BeEquivalentTo(comparison.MSBuild.AnalyzerReferencePaths(), comparison.BuildalyzerLog);
     }
 
     [Test]

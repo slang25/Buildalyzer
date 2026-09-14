@@ -266,8 +266,8 @@ public static class AnalyzerResultExtensions
             // such a project is indistinguishable from a fully built one.
             analyzerResult.Manager.LoggerFactory?.CreateLogger(typeof(AnalyzerResultExtensions).FullName!).LogWarning(
                 "No compiler invocation was captured for {ProjectFile} ({TargetFramework}); the build did not reach CoreCompile, "
-                + "so the workspace project is reconstructed from the evaluated items and properties (build-generated sources, "
-                + "SDK analyzers and compiler-computed options may be missing). Succeeded: {Succeeded}.",
+                + "so the workspace project is reconstructed from the evaluated items and properties plus what the build resolved "
+                + "before failing (build-generated sources and anything resolved after the failure are missing). Succeeded: {Succeeded}.",
                 analyzerResult.ProjectFilePath,
                 string.IsNullOrEmpty(analyzerResult.TargetFramework) ? "no target framework" : analyzerResult.TargetFramework,
                 analyzerResult.Succeeded);
@@ -785,7 +785,9 @@ public static class AnalyzerResultExtensions
     /// When MSBuild aborts before the compiler task runs, <c>CompilerCommand</c> is never captured, so the
     /// compiler-backed accessors (<c>SourceFiles</c>, <c>References</c>, ...) are empty even though the project
     /// evaluated its <c>Compile</c> items. In that case the workspace is reconstructed from evaluation-time
-    /// items and the resolved <c>ReferencePath</c> captured from ResolveAssemblyReference. See issue #341.
+    /// items plus the item groups the build's resolution tasks output before failing - the
+    /// <c>ReferencePath</c> from ResolveAssemblyReference and the analyzers from the SDK's targeting-pack and
+    /// package resolution. See issue #341.
     /// <para>
     /// Only safe for languages whose compilation is order-insensitive. Evaluated <c>Compile</c> items are
     /// in declaration order, which for F# is not compile order (<c>FSharpSourceCodeCompileOrder</c> re-sorts
@@ -963,10 +965,16 @@ public static class AnalyzerResultExtensions
             analyzerReferences = [.. commandLine.AnalyzerReferences.Select(a => a.FilePath)];
         }
 
-        // Fall back to the evaluation-time Analyzer items when the compiler never ran (issue #341).
+        // Fall back to the Analyzer items when the compiler never ran (issue #341): the evaluated ones plus
+        // those the SDK resolved before the failure, which the build forwards as task outputs.
+        // ResolveTargetingPackAssets adds the targeting packs' analyzers to Analyzer directly, while
+        // ResolvePackageAssets outputs the packages' as ResolvedAnalyzers and a later target copies them into
+        // Analyzer with an item-group operation no task event records - so both groups are read.
         if (analyzerReferences.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
-            analyzerReferences = GetItemPaths(analyzerResult, "Analyzer");
+            analyzerReferences = [.. GetItemPaths(analyzerResult, "Analyzer")
+                .Concat(GetItemPaths(analyzerResult, "ResolvedAnalyzers"))
+                .Distinct(IOPath.Comparer)];
         }
 
         // A path that is missing on disk (an unbuilt project-private analyzer, say) becomes an

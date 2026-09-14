@@ -290,13 +290,15 @@ internal sealed class EventProcessor : IDisposable
             result.AddTaskParameterInput(itemType, e.Items.Select(ToInputItem));
         }
 
-        // ResolveAssemblyReference's resolved references, produced before CoreCompile. Kept so the workspace
-        // can still be reconstructed when the build fails before the compiler runs (issue #341). On a
-        // successful build the compiler task inputs above supersede this.
+        // The item groups the SDK resolves before CoreCompile: ResolveAssemblyReference's ReferencePath, and
+        // the analyzers ResolveTargetingPackAssets adds to Analyzer and ResolvePackageAssets outputs as
+        // ResolvedAnalyzers. Kept so the workspace can still be reconstructed when the build fails before the
+        // compiler runs (issue #341). On a successful build the compiler task inputs above supersede them.
         else if (e.Kind == PipeTaskParameterKind.TaskOutput
-            && string.Equals(e.ItemType, "ReferencePath", StringComparison.OrdinalIgnoreCase))
+            && e.ItemType is { Length: > 0 } outputType
+            && IsResolvedBeforeCompile(outputType))
         {
-            result.AddItems("ReferencePath", e.Items.Select(item => (IProjectItem)new PipeProjectItem(item)));
+            result.AddItems(outputType, e.Items.Select(item => (IProjectItem)new PipeProjectItem(item)));
         }
     }
 
@@ -305,6 +307,12 @@ internal sealed class EventProcessor : IDisposable
 
     private static bool IsCompilerInput(string itemType) => itemType is
         "Sources" or "References" or "Analyzers" or "AdditionalFiles" or "AnalyzerConfigFiles" or "EmbeddedFiles";
+
+    // MSBuild item names are case-insensitive, unlike the compiler task's parameter names above.
+    private static bool IsResolvedBeforeCompile(string itemType) =>
+        string.Equals(itemType, "ReferencePath", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(itemType, "Analyzer", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(itemType, "ResolvedAnalyzers", StringComparison.OrdinalIgnoreCase);
 
     private void OnPipeTargetStarted(PipeTargetStartedEventArgs e) => OnTargetStarted(e.TargetName, ProjectContextId(e));
 
