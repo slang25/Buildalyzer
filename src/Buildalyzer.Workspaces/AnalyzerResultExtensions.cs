@@ -70,7 +70,8 @@ public static class AnalyzerResultExtensions
 
         // Match MSBuildWorkspace's naming: a framework flavour of a multi-targeted project is
         // "<Project>(<tfm>)" even when it is the only flavour being added; a single-targeted project
-        // keeps its bare name.
+        // keeps its bare name. Only this result is in hand, so whether the project is multi-targeted is
+        // read from its TargetFrameworks (see IsMultiTargeted).
         ProjectId? projectId = AddResult(analyzerResult, workspace, addDiscriminator: IsMultiTargeted(analyzerResult));
         return projectId is null ? null : workspace.CurrentSolution.GetProject(projectId);
     }
@@ -103,15 +104,11 @@ public static class AnalyzerResultExtensions
             AddReferencedAnalyzers(analyzer.Manager, results.SelectMany(r => r.ProjectReferences), workspace, visited, prebuilt);
         }
 
-        // Match MSBuildWorkspace: append a "(tfm)" discriminator when the project is multi-targeted (it
-        // declares TargetFrameworks, or produced more than one framework); a single-targeted project keeps
-        // its bare name.
-        bool addDiscriminator = results.Any(IsMultiTargeted)
-            || results
-                .Select(r => r.TargetFramework)
-                .Where(tfm => !string.IsNullOrEmpty(tfm))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Count() > 1;
+        // Match MSBuildWorkspace exactly: it appends the "(tfm)" discriminator only when the project yielded
+        // more than one per-framework project, whatever TargetFrameworks says. A project that lists a single
+        // framework in TargetFrameworks, or that overrides an inherited TargetFrameworks with its own
+        // TargetFramework, builds once and keeps its bare name.
+        bool addDiscriminator = results.Length > 1;
 
         List<ProjectId> ids = [];
         foreach (IAnalyzerResult result in results)
@@ -564,11 +561,19 @@ public static class AnalyzerResultExtensions
             analyzerResult.ReferencesEmbeddingInteropTypes.Contains(reference)));
     }
 
-    // Whether the project declares itself multi-targeted. Reads the evaluated TargetFrameworks property of
-    // the build (present in each framework's inner build too), which is exactly how MSBuildWorkspace decides
-    // to load a project once per framework and name each "<Project>(<tfm>)".
+    // Whether the project is multi-targeted, judged from a single framework's result. MSBuildWorkspace loads
+    // a project once per ';'-separated entry of TargetFrameworks (unless TargetFramework is set) and names
+    // each "<Project>(<tfm>)" only when that yields more than one, so a TargetFrameworks listing a single
+    // framework does not earn the discriminator. The evaluated TargetFrameworks is present in each
+    // framework's inner build too, so it can be read from any result. One case is not decidable from the
+    // result alone: a project that overrides an inherited multi-valued TargetFrameworks with its own
+    // TargetFramework builds once, but its result looks like one flavour of a multi-targeted build; the
+    // analyzer-level entry points count the results instead (see AddAnalyzer) and get that case right.
     private static bool IsMultiTargeted(IAnalyzerResult analyzerResult) =>
-        !string.IsNullOrWhiteSpace(analyzerResult.GetProperty("TargetFrameworks"));
+        (analyzerResult.GetProperty("TargetFrameworks") ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count() > 1;
 
     private static string ProjectName(IAnalyzerResult analyzerResult, bool addDiscriminator)
     {

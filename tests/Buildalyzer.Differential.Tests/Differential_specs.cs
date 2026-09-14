@@ -988,6 +988,58 @@ public class Differential_specs
     }
 
     [Test]
+    public async Task Single_framework_in_TargetFrameworks_is_named_without_discriminator()
+    {
+        // MSBuildWorkspace loads one project per entry of TargetFrameworks and appends "(tfm)" to the name only
+        // when that yields more than one. A TargetFrameworks that lists a single framework therefore keeps the
+        // bare name, exactly like a TargetFramework would.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "SingleFrameworkList",
+            p => p.Property("TargetFrameworks", TargetFramework),
+            Source("Class1.cs", "namespace SingleFrameworkList;\npublic class Class1 { }\n"));
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+
+        AssertLoadedCleanly(comparison);
+        comparison.MSBuild.Name.Should().Be("SingleFrameworkList");
+        comparison.Buildalyzer.Name.Should().Be(comparison.MSBuild.Name);
+        comparison.Buildalyzer.Shape().Should().BeEquivalentTo(comparison.MSBuild.Shape(), comparison.BuildalyzerLog);
+    }
+
+    [Test]
+    public async Task Project_overriding_inherited_TargetFrameworks_is_named_without_discriminator()
+    {
+        // A Directory.Build.props that multi-targets the tree, overridden by a project that sets its own
+        // TargetFramework: the project builds once, so MSBuildWorkspace gives it the bare name even though
+        // its evaluated TargetFrameworks still lists two frameworks.
+        using ProjectFixture fixture = new();
+        string projectPath = fixture.AddProject(
+            "OverridesInherited",
+            p => p.Property("TargetFramework", TargetFramework),
+            new Dictionary<string, string>
+            {
+                ["Class1.cs"] = "namespace OverridesInherited;\npublic class Class1 { }\n",
+                ["Directory.Build.props"] = $"""
+                    <Project>
+                      <PropertyGroup>
+                        <TargetFrameworks>{TargetFramework};net8.0</TargetFrameworks>
+                      </PropertyGroup>
+                    </Project>
+                    """,
+            });
+        fixture.Restore(projectPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
+
+        AssertLoadedCleanly(comparison);
+        comparison.MSBuild.Name.Should().Be("OverridesInherited");
+        comparison.Buildalyzer.Solution.Projects.Should().ContainSingle();
+        comparison.Buildalyzer.Name.Should().Be(comparison.MSBuild.Name);
+    }
+
+    [Test]
     public async Task Solution_projects_match_reference()
     {
         using ProjectFixture fixture = new();
