@@ -177,11 +177,32 @@ public static class AnalyzerResultExtensions
         // itself (via the -restore switch, folded into the same invocation); a separate up-front graph
         // restore was measured to be slower, since the per-project restores already overlap in this parallel
         // wave while an up-front restore only adds a serial process.
-        return closure.Values
-            .AsParallel()
-            .Select(a => (Path: NormalizePath(a.ProjectFile.Path), Results: WorkspaceResults(a.Build())))
-            .ToList()
-            .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
+        return BuildAll(closure.Values);
+    }
+
+    /// <summary>
+    /// Builds every analyzer concurrently and indexes the results to model as Roslyn projects by project path.
+    /// </summary>
+    /// <remarks>
+    /// A single failing build surfaces its own exception, as it does when a project is built on the sequential
+    /// path (and as the core does for a multi-targeted project's per-framework builds), rather than PLINQ's
+    /// <see cref="AggregateException"/> around it.
+    /// </remarks>
+    internal static IReadOnlyDictionary<string, IAnalyzerResult[]> BuildAll(IEnumerable<IProjectAnalyzer> analyzers)
+    {
+        try
+        {
+            return analyzers
+                .AsParallel()
+                .Select(a => (Path: NormalizePath(a.ProjectFile.Path), Results: WorkspaceResults(a.Build())))
+                .ToList()
+                .ToDictionary(x => x.Path, x => x.Results, IOPath.Comparer);
+        }
+        catch (AggregateException exception) when (exception.InnerExceptions.Count == 1)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(exception.InnerExceptions[0]).Throw();
+            throw;
+        }
     }
 
     /// <summary>
