@@ -21,7 +21,10 @@ ToBeReleased
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Basic.CompilerLog.Util" Version="0.9.60" />
+    <!-- Pinned exactly: this package binds to publicized internals (see below), which carry no
+         compatibility promise, so a newer version unified into a consumer's graph would fail at runtime
+         with a MissingMethodException rather than at restore. -->
+    <PackageReference Include="Basic.CompilerLog.Util" Version="[0.9.60]" />
     <PackageReference Include="Krafs.Publicizer" Version="2.3.2" PrivateAssets="all" />
   </ItemGroup>
 
