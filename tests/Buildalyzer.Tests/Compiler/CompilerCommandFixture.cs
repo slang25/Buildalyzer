@@ -44,6 +44,18 @@ public class CompilerCommandFixture
             "/out:\"C:\\a b\\x.dll\"");
     }
 
+    [Test(Description = "The vendored tokenizer drops the characters Roslyn treats as illegal in an argument")]
+    public void Drops_illegal_characters_like_roslyn()
+    {
+        // A control character (here a tab, kept inside the argument by the quotes) and '|' are dropped
+        // rather than kept, as Roslyn's tokenizer does.
+        const string commandLine = "csc.exe \"a\tb.cs\" /out:x|y.dll";
+
+        string[] tokens = [.. RoslynCommandLineParser.SplitCommandLineIntoArguments(commandLine, removeHashComments: true)];
+
+        tokens.Should().Equal("csc.exe", "ab.cs", "/out:xy.dll");
+    }
+
     [Test]
     public void Builds_csharp_command_from_task_parameters()
     {

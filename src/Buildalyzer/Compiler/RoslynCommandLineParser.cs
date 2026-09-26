@@ -29,7 +29,8 @@ internal static class RoslynCommandLineParser
 
     /// <summary>
     /// Splits a command line into individual arguments using the same quoting/backslash rules as Roslyn's
-    /// command-line parser (a verbatim copy of its tokenizer). An argument enclosed in a single pair of
+    /// command-line parser (a copy of its tokenizer, differing only in that an illegal character - a control
+    /// character or '|' - is dropped without being reported). An argument enclosed in a single pair of
     /// quotes has them removed, other quotes are kept, empty arguments are dropped, and backslashes are
     /// preserved except where they escape a quote.
     /// </summary>
@@ -97,6 +98,15 @@ internal static class RoslynCommandLineParser
                         break;
 
                     default:
+                        // Control characters and '|' are illegal in an argument, so they are dropped as
+                        // Roslyn drops them. Roslyn also reports the first one for the compiler to turn
+                        // into an error, which has no equivalent here.
+                        if (current is (>= '\u0001' and <= '\u001f') or '|')
+                        {
+                            i++;
+                            break;
+                        }
+
                         builder.Append(current);
                         i++;
                         break;
