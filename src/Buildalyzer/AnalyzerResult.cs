@@ -15,38 +15,31 @@ public class AnalyzerResult : IAnalyzerResult
     // Compiler inputs collected from the Csc/Vbc/Fsc task's resolved input parameters (structured items,
     // no command-line parsing), plus the raw compiler command line captured from the build.
     private readonly Dictionary<string, List<CompilerInputItem>> _taskInputs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Lazy<CompilerCommand?> _compilerCommand;
     private string? _commandLineText;
     private CompilerLanguage _commandLineLanguage;
-    private CompilerCommand? _compilerCommand;
-    private bool _compilerCommandBuilt;
 
     /// <summary>
     /// The compiler command, built lazily from the collected task-input parameters and the raw compiler
     /// command line once the build has produced them.
     /// </summary>
-    public CompilerCommand? CompilerCommand
-    {
-        get
-        {
-            if (!_compilerCommandBuilt)
-            {
-                _compilerCommandBuilt = true;
-                _compilerCommand = CompilerCommandBuilder.Build(
-                    _commandLineLanguage,
-                    Path.GetDirectoryName(ProjectFilePath) ?? string.Empty,
-                    _commandLineText,
-                    _taskInputs);
-            }
-
-            return _compilerCommand;
-        }
-    }
+    /// <remarks>
+    /// Built under <see cref="Lazy{T}"/>'s default (execution-and-publication) mode: a result is handed to
+    /// consumers once its build is over and may be read from several threads at once, none of which must
+    /// observe a command that another is still building.
+    /// </remarks>
+    public CompilerCommand? CompilerCommand => _compilerCommand.Value;
 
     internal AnalyzerResult(string projectFilePath, AnalyzerManager manager, ProjectAnalyzer analyzer)
     {
         ProjectFilePath = projectFilePath;
         Manager = manager;
         Analyzer = analyzer;
+        _compilerCommand = new Lazy<CompilerCommand?>(() => CompilerCommandBuilder.Build(
+            _commandLineLanguage,
+            Path.GetDirectoryName(ProjectFilePath) ?? string.Empty,
+            _commandLineText,
+            _taskInputs));
 
         string projectGuid = GetProperty(nameof(ProjectGuid));
         if (string.IsNullOrEmpty(projectGuid) || !Guid.TryParse(projectGuid, out _projectGuid))
