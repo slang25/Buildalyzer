@@ -105,7 +105,9 @@ public sealed class BuildEnvironment
         };
         if (DesignTime)
         {
-            _globalProperties = CopyItems(_globalProperties, MsBuildProperties.DesignTime);
+            // Added to the properties above, not in place of them: CopyItems returns a copy of its source
+            // (for cloning), which is not what this wants to keep.
+            CopyItems(_globalProperties, MsBuildProperties.DesignTime);
         }
         _additionalGlobalProperties = CopyItems(_globalProperties, additionalGlobalProperties);
 
