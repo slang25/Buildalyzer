@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Microsoft.Build.Framework;
 using XenoAtom.MsBuildPipeLogger;
 
@@ -70,6 +71,30 @@ public class BuildalyzerLogger : PipeLogger
         // as IEventSource4. Gating on IEventSource4 both avoids a useless opt-in on 15.3-16.3 and keeps the
         // AnyEventRaised handler (whose body would fail to JIT where TaskParameterEventArgs is missing) off
         // older MSBuilds. Without it Buildalyzer falls back to the evaluation-time items.
+        TryIncludeTaskInputs(eventSource);
+    }
+
+    // The IEventSource4 test lives in its own method, called through this one: the JIT resolves a type when
+    // it compiles the method that names it, not when the test runs, so on an MSBuild whose Framework
+    // assembly predates IEventSource4 the method naming it fails to compile with a TypeLoadException. That
+    // is caught here, in a method that names none of the newer types, so the logger still initializes and
+    // Buildalyzer falls back to the evaluation-time items.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void TryIncludeTaskInputs(IEventSource eventSource)
+    {
+        try
+        {
+            IncludeTaskInputs(eventSource);
+        }
+        catch (TypeLoadException)
+        {
+            // IEventSource4 (MSBuild 16.4+) is not available.
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void IncludeTaskInputs(IEventSource eventSource)
+    {
         if (eventSource is IEventSource4 eventSource4)
         {
             eventSource4.IncludeTaskInputs();
