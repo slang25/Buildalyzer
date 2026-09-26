@@ -25,3 +25,30 @@ public class Tracks_one_analyzer_per_project
         ctx.Manager.Projects.Should().ContainSingle();
     }
 }
+
+public class Analyze
+{
+    [Test]
+    public void throws_when_the_binary_log_cannot_be_replayed()
+    {
+        // A file MSBuild cannot read as a binary log: the replay exits without raising a single event, which
+        // must surface as an error rather than as an empty set of results.
+        string directory = Path.Combine(Path.GetTempPath(), $"buildalyzer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string binaryLog = Path.Combine(directory, "corrupt.binlog");
+            File.WriteAllText(binaryLog, "this is not a binary log");
+
+            var manager = new AnalyzerManager();
+
+            manager.Invoking(m => m.Analyze(binaryLog))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*could not replay*corrupt.binlog*");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}

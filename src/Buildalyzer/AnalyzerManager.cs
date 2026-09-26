@@ -136,9 +136,25 @@ public class AnalyzerManager : IAnalyzerManager
         // its own copy of the client handle open there, so the read never sees the end of the file.
         PipeLoggerDrain.ReadUntilExit(pipeLogger, processRunner, eventCollector);
 
+        // A replay that raised no event at all never read the log: one written by a newer MSBuild than the
+        // one replaying it, a corrupt file, or a startup failure. Every binary log opens with BuildStarted,
+        // so an empty pipe is unambiguous - and it is the only signal there is, as MSBuild exits with 0 from
+        // a failed replay and merely prints the reason ("There was an exception while reading the log
+        // file: ...") to its standard output. That is an error to surface, as reading the log in-process
+        // did, not an empty result set to hand back.
+        if (eventCollector.IsEmpty)
+        {
+            ProcessData data = processRunner.Data;
+            string[] output = [.. data.Output, .. data.Error];
+            throw new InvalidOperationException(
+                $"MSBuild could not replay the binary log {path} (exit code {processRunner.ExitCode})."
+                + (output.Length > 0 ? $" MSBuild reported:{System.Environment.NewLine}{string.Join(System.Environment.NewLine, output)}" : string.Empty));
+        }
+
+        // The exit code counts towards the outcome as it does for a live build.
         return new AnalyzerResults
         {
-            { eventProcessor.Results, eventProcessor.OverallSuccess }
+            { eventProcessor.Results, processRunner.ExitCode == 0 && eventProcessor.OverallSuccess }
         };
     }
 
