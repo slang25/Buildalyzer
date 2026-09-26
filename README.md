@@ -5,6 +5,7 @@ A utility to perform design-time builds of .NET projects without having to think
 **NuGet**
 * [Buildalyzer](https://www.nuget.org/packages/Buildalyzer/)
 * [Buildalyzer.Workspaces](https://www.nuget.org/packages/Buildalyzer.Workspaces/)
+* [Buildalyzer.CompilerLogs](https://www.nuget.org/packages/Buildalyzer.CompilerLogs/)
 
 **GitHub**
 * [Buildalyzer](https://github.com/phmonte/Buildalyzer)
@@ -73,7 +74,7 @@ or via the .NET Core CLI:
 $ dotnet add package Buildalyzer.Workspaces
 ```
 
-Both packages target .NET Standard 2.0.
+Buildalyzer.CompilerLogs (see [Compiler Logs](#compiler-logs)) is installed the same way. Buildalyzer targets .NET 8, Buildalyzer.Workspaces targets .NET 8 and .NET 10, and Buildalyzer.CompilerLogs targets .NET 9 and .NET 10.
 
 ## Usage
 
@@ -234,3 +235,18 @@ Project roslynProject = analyzer.AddToWorkspace(workspace);
 ```
 
 In both cases, Buildalyzer will attempt to resolve project references within the Roslyn workspace so the Roslyn projects will correctly reference each other.
+
+## Compiler Logs
+
+The extension library `Buildalyzer.CompilerLogs` writes a [compiler log](https://github.com/jaredpar/complog) (`.complog`) from a set of build results. A compiler log packages every input the compiler saw (sources, references, analyzers, generated files, options) into one portable file that the `complog` tooling can inspect, replay, diff and export, which makes it a convenient way to hand a compilation to someone else or to keep one for later analysis:
+
+```csharp
+using Buildalyzer.CompilerLogs;
+// ...
+
+AnalyzerManager manager = new AnalyzerManager();
+IAnalyzerResults results = manager.GetProject(@"C:\MyCode\MyProject.csproj").Build();
+CompilerLogCreateResult created = results.TryCreateCompilerLog(@"C:\MyCode\MyProject.complog");
+```
+
+One compilation is written per built target framework. `TryCreateCompilerLog` reports the results it could not include (a result that never reached the compiler has no compilation to record); `CreateCompilerLog` throws instead. The package requires .NET 9 or later.

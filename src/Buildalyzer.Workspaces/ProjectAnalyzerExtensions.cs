@@ -38,7 +38,8 @@ public static class ProjectAnalyzerExtensions
     /// framework (named <c>Name(tfm)</c>, matching MSBuildWorkspace); the first target framework's
     /// project is returned, and every framework is present in <c>workspace.CurrentSolution</c>.
     /// <c>null</c> when nothing could be added - the project's language is not one Roslyn workspaces
-    /// support (such as F#), or no target framework built successfully.
+    /// support (such as F#), or the build produced no results at all. A failed build that did produce
+    /// results is added (reconstructed from what the build resolved before failing) rather than dropped.
     /// </returns>
     public static Project? AddToWorkspace(this IProjectAnalyzer analyzer, Workspace workspace, bool addProjectReferences = false)
     {
