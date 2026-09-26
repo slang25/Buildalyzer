@@ -25,6 +25,9 @@ public class AnalyzerManager : IAnalyzerManager
 
     public SolutionInfo? Solution { get; }
 
+    /// <summary>Resolves (and caches) <c>dotnet --info</c> for every project this manager builds.</summary>
+    internal DotNetInfoResolver DotNetInfoResolver { get; } = new();
+
     public AnalyzerManager(AnalyzerManagerOptions? options = null)
         : this(IOPath.Empty, options)
     {

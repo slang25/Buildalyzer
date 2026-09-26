@@ -64,8 +64,8 @@ public class EnvironmentFactory
     private BuildEnvironment? CreateCoreEnvironment(EnvironmentOptions options)
     {
         // Get paths
-        var resolver = new DotNetInfoResolver(_manager.LoggerFactory);
-        var info = resolver.Resolve(IO.IOPath.Parse(_projectFile.Path), IO.IOPath.Parse(options.DotnetExePath));
+        var resolver = _manager is AnalyzerManager manager ? manager.DotNetInfoResolver : new DotNetInfoResolver();
+        var info = resolver.Resolve(IO.IOPath.Parse(_projectFile.Path), IO.IOPath.Parse(options.DotnetExePath), _manager.LoggerFactory);
 
         if ((info.BasePath ?? info.Runtimes.Values.FirstOrDefault()) is not { } dotnetPath)
         {
