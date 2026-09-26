@@ -683,10 +683,19 @@ public class SimpleProjectsFixture
         // Then
         results.OverallSuccess.Should().BeTrue(log.ToString());
 
-        string outputAssembly = results.First().GetProperty("TargetPath");
-        outputAssembly.Should().NotBeNullOrEmpty();
-        File.Exists(outputAssembly).Should().BeFalse(
-            "a design-time build skips compiler execution, so no assembly should be produced");
+        // fsc writes to the intermediate assembly under obj/; bin/ would be empty either way, as the
+        // design-time Compile target never copies the output there.
+        IAnalyzerResult result = results.First();
+        string projectDirectory = result.GetProperty("ProjectDir");
+        string intermediateOutputPath = result.GetProperty("IntermediateOutputPath");
+        string targetFileName = result.GetProperty("TargetFileName");
+        projectDirectory.Should().NotBeNullOrEmpty(log.ToString());
+        intermediateOutputPath.Should().NotBeNullOrEmpty(log.ToString());
+        targetFileName.Should().NotBeNullOrEmpty(log.ToString());
+
+        string intermediateAssembly = Path.GetFullPath(Path.Combine(projectDirectory, intermediateOutputPath, targetFileName));
+        File.Exists(intermediateAssembly).Should().BeFalse(
+            "a design-time build skips compiler execution, so no assembly should be produced at {0}", intermediateAssembly);
     }
 
     [Test]
