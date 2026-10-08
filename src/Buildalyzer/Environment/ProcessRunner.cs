@@ -135,6 +135,14 @@ internal sealed class ProcessRunner : IDisposable
         return exited;
     }
 
+    /// <summary>Waits for the redirected output streams to end, up to a timeout, so that <see cref="Data"/> is complete.</summary>
+    /// <remarks>
+    /// Bounded for the reason <see cref="WaitForExit()"/> gives: a process that left children holding the
+    /// write end keeps the streams open past its own exit. Call it after the process has exited, when what is
+    /// left is the tail the handlers have not delivered yet.
+    /// </remarks>
+    public bool WaitForOutput(int timeout) => Collector.WaitForCompletion(timeout);
+
     private void OutputDataReceived(object sender, DataReceivedEventArgs e)
     {
         if (!string.IsNullOrEmpty(e.Data))

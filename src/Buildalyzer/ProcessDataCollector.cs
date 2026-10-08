@@ -18,9 +18,18 @@ internal sealed class ProcessDataCollector : IDisposable
         Process.ErrorDataReceived += ErrorDataReceived;
     }
 
-    public ProcessData Data => new(
-        [.. Output],
-        [.. Error]);
+    public ProcessData Data
+    {
+        get
+        {
+            // Under the same lock as the additions: the handlers can still be delivering lines after the
+            // process has exited, and copying a list another thread is appending to is not safe.
+            lock (Output)
+            {
+                return new([.. Output], [.. Error]);
+            }
+        }
+    }
 
     /// <summary>Waits for both redirected streams to report that they have ended.</summary>
     /// <returns><c>true</c> if both ended within <paramref name="millisecondsTimeout"/>.</returns>
@@ -42,7 +51,10 @@ internal sealed class ProcessDataCollector : IDisposable
         }
         else if (value.Length > 0)
         {
-            buffer.Add(value);
+            lock (Output)
+            {
+                buffer.Add(value);
+            }
         }
     }
 

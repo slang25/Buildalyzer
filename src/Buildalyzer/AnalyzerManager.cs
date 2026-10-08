@@ -147,6 +147,10 @@ public class AnalyzerManager : IAnalyzerManager
         // did, not an empty result set to hand back.
         if (eventCollector.IsEmpty)
         {
+            // The process has exited but its output handlers may still be delivering the lines that say why;
+            // the drain's settle window does not cover them, as the pipe read ends the moment the logger shuts
+            // down. The wait is bounded because the streams need not close at all (see ProcessRunner.WaitForExit).
+            processRunner.WaitForOutput(OutputGracePeriod);
             ProcessData data = processRunner.Data;
             string[] output = [.. data.Output, .. data.Error];
             throw new InvalidOperationException(
@@ -160,6 +164,9 @@ public class AnalyzerManager : IAnalyzerManager
             { eventProcessor.Results, processRunner.ExitCode == 0 && eventProcessor.OverallSuccess }
         };
     }
+
+    /// <summary>How long to wait for a replay process' output to finish arriving once it has exited.</summary>
+    private const int OutputGracePeriod = 2_000;
 
     private IProjectAnalyzer? GetProject(IOPath path, ProjectInfo? project)
         => (Guard.NotDefault(path).File(), project) switch
