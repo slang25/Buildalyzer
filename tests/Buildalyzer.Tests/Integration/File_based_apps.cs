@@ -43,6 +43,51 @@ public class Analyzer_Build
         File.Exists(ctx.Analyzer.ProjectFile.Path).Should().BeFalse(ctx.Log.ToString());
         ctx.Location.Directory!.GetFiles("*.csproj").Should().BeEmpty(ctx.Log.ToString());
     }
+
+    [Test]
+    public void Replaces_a_project_an_earlier_analysis_left_behind()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+        string path = ctx.Analyzer.ProjectFile.Path;
+
+        try
+        {
+            File.WriteAllText(path, "<Project />" + System.Environment.NewLine + FileBasedApp.GeneratedProjectMarker);
+
+            var results = ctx.Analyzer.Build(new EnvironmentOptions());
+
+            results.OverallSuccess.Should().BeTrue(ctx.Log.ToString());
+            File.Exists(path).Should().BeFalse(ctx.Log.ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public void Leaves_a_project_it_did_not_generate_alone()
+    {
+        using var ctx = Context.ForProject("FileBasedApp/app.cs");
+        string path = ctx.Analyzer.ProjectFile.Path;
+
+        // FileBasedProgram is the SDK's property, not Buildalyzer's mark: a hand-written project can carry it too.
+        const string project = "<Project><PropertyGroup><FileBasedProgram>true</FileBasedProgram></PropertyGroup></Project>";
+
+        try
+        {
+            File.WriteAllText(path, project);
+
+            ctx.Analyzer.Invoking(a => a.Build(new EnvironmentOptions()))
+                .Should().Throw<InvalidOperationException>()
+                .WithMessage("*did not generate*");
+            File.ReadAllText(path).Should().Be(project);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }
 
 public class Project_file

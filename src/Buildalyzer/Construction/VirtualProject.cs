@@ -104,7 +104,9 @@ internal sealed class VirtualProject(
                 + "where a project that Buildalyzer did not generate already exists.");
         }
 
-        File.WriteAllText(file.FullName, Xml);
+        // After the root element rather than inside it: a trailing comment is still well-formed XML, and the
+        // project MSBuild evaluates is then exactly the one the SDK generated.
+        File.WriteAllText(file.FullName, Xml + System.Environment.NewLine + FileBasedApp.GeneratedProjectMarker + System.Environment.NewLine);
     }
 
     /// <summary>Returns whether the file at this path is a project Buildalyzer generated.</summary>
@@ -141,7 +143,11 @@ internal sealed class VirtualProject(
 
             try
             {
-                Path.File()!.Delete();
+                // Something replaced the project while it was building; it is no longer this analysis' to delete.
+                if (Path.File() is { Exists: true } file && IsGenerated(file))
+                {
+                    file.Delete();
+                }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
