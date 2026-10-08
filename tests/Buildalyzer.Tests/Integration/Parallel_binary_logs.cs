@@ -40,6 +40,35 @@ public class Analyze_binary_log
         }
     }
 
+    /// <summary>
+    /// <c>net8.0</c> and <c>net8.0-windows</c> have the same <c>TargetFrameworkMoniker</c>; only the
+    /// platform moniker tells them apart. A binary log replays both inner builds through one event
+    /// processor, so keying results by moniker would fold them into a single result.
+    /// </summary>
+    [Test]
+    public void Keeps_inner_builds_that_differ_only_by_platform_apart()
+    {
+        using ProjectFileTestContext context = Context.ForProject("PlatformMultiTargetProject/PlatformMultiTargetProject.csproj");
+        string binaryLogPath = Path.Combine(Path.GetTempPath(), $"buildalyzer-platform-{Guid.NewGuid():N}.binlog");
+
+        try
+        {
+            BuildInParallel(context.Location, binaryLogPath);
+
+            IAnalyzerResults results = context.Manager.Analyze(binaryLogPath);
+
+            SourceFileNames(results, "net8.0").Should().Contain("PortableOnly.cs").And.NotContain("WindowsOnly.cs");
+            SourceFileNames(results, "net8.0-windows").Should().Contain("WindowsOnly.cs").And.NotContain("PortableOnly.cs");
+        }
+        finally
+        {
+            if (File.Exists(binaryLogPath))
+            {
+                File.Delete(binaryLogPath);
+            }
+        }
+    }
+
     private static string[] SourceFileNames(IAnalyzerResults results, string targetFramework)
     {
         IAnalyzerResult result = results.Single(r => r.TargetFramework == targetFramework);

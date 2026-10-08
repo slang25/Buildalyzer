@@ -122,14 +122,13 @@ internal sealed class EventProcessor : IDisposable
             return;
         }
 
-        string tfm = propertiesAndItems?.Properties.TryGet("TargetFrameworkMoniker")?.StringValue ?? string.Empty;
-
         if (propertiesAndItems is { Properties: { }, Items: { } })
         {
-            if (!_results.TryGetValue(tfm, out AnalyzerResult result))
+            string key = ResultKey(propertiesAndItems);
+            if (!_results.TryGetValue(key, out AnalyzerResult result))
             {
                 result = new AnalyzerResult(_projectFilePath.ToString(), _manager, _analyzer);
-                _results[tfm] = result;
+                _results[key] = result;
             }
 
             result.ProcessProject(propertiesAndItems);
@@ -145,6 +144,14 @@ internal sealed class EventProcessor : IDisposable
         // than falling through to whichever result happens to be around.
         _resultsByContext[contextId] = null;
     }
+
+    // Keyed by the short TargetFramework rather than the moniker: net8.0 and net8.0-windows share the moniker
+    // .NETCoreApp,Version=v8.0, so moniker keys would fold their inner builds into one result. A legacy project
+    // has no TargetFramework, only a moniker.
+    private static string ResultKey(PropertiesAndItems propertiesAndItems)
+        => propertiesAndItems.Properties.TryGet("TargetFramework")?.StringValue is { Length: > 0 } targetFramework
+        ? targetFramework
+        : propertiesAndItems.Properties.TryGet("TargetFrameworkMoniker")?.StringValue ?? string.Empty;
 
     private static bool IsRestoreGraphEvaluation(PropertiesAndItems? propertiesAndItems) =>
         propertiesAndItems?.Properties.TryGet("ExcludeRestorePackageImports")?.StringValue is { } value

@@ -114,7 +114,9 @@ public class AnalyzerResult : IAnalyzerResult
         Items.TryGetValue("ProjectReference", out IProjectItem[] items)
             ? items.Select(x => IOPath.Parse(
                         Path.Combine(Path.GetDirectoryName(ProjectFilePath), x.ItemSpec)).Root().ToString())
-                   .Distinct(IOPath.Comparer)
+                   // Case-insensitive even where the file system is not: references written with
+                   // inconsistent casing (common in Windows-authored projects) are one project.
+                   .Distinct(StringComparer.OrdinalIgnoreCase)
             : [];
 
     /// <inheritdoc/>
