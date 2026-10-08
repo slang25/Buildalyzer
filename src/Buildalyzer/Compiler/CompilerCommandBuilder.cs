@@ -239,18 +239,22 @@ internal static class CompilerCommandBuilder
             [
                 .. group
                     .SelectMany(AliasNames)
-                    // 'global' is never reported by Roslyn as an alias, so filter it out.
-                    .Where(a => a.Length > 0 && !a.IsMatch("global"))
+                    .Where(a => a.Length > 0)
                     .Distinct(StringComparer.Ordinal)
             ];
 
-            if (!aliases.IsEmpty)
+            // 'global' alongside another alias keeps the assembly visible in the global namespace as well (the
+            // Csc task passes it as both a plain /reference and an aliased one), so it has to stay. On its own
+            // it is just the ordinary unaliased reference, which an absent entry already means.
+            if (!aliases.IsEmpty && !aliases.All(IsGlobal))
             {
                 builder[group.Key] = aliases;
             }
         }
 
         return builder.ToImmutable();
+
+        static bool IsGlobal(string alias) => alias.IsMatch("global");
 
         static IEnumerable<string> AliasNames(CompilerInputItem item)
             => item.Metadata

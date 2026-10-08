@@ -980,9 +980,29 @@ public static class AnalyzerResultExtensions
 
         return references
             .Where(File.Exists)
-            .Select(x => MetadataReference.CreateFromFile(x, new MetadataReferenceProperties(
-                aliases: analyzerResult.ReferenceAliases.GetValueOrDefault(x),
-                embedInteropTypes: analyzerResult.ReferencesEmbeddingInteropTypes.Contains(x))));
+            .SelectMany(x => CreateMetadataReferences(
+                x,
+                analyzerResult.ReferenceAliases.GetValueOrDefault(x),
+                analyzerResult.ReferencesEmbeddingInteropTypes.Contains(x)));
+    }
+
+    // The Csc task passes a reference aliased "global,Foo" as two switches - a plain /reference and a
+    // /reference:Foo= - and the compiler keeps both, which is the shape MSBuildWorkspace reports (and the one
+    // the command-line fallback above produces). A single reference carrying both aliases binds the same.
+    private static IEnumerable<MetadataReference> CreateMetadataReferences(string path, ImmutableArray<string> aliases, bool embedInteropTypes)
+    {
+        if (aliases.IsDefaultOrEmpty || !aliases.Any(IsGlobalAlias))
+        {
+            yield return MetadataReference.CreateFromFile(path, new MetadataReferenceProperties(aliases: aliases, embedInteropTypes: embedInteropTypes));
+            yield break;
+        }
+
+        yield return MetadataReference.CreateFromFile(path, new MetadataReferenceProperties(embedInteropTypes: embedInteropTypes));
+        yield return MetadataReference.CreateFromFile(path, new MetadataReferenceProperties(
+            aliases: [.. aliases.Where(a => !IsGlobalAlias(a))],
+            embedInteropTypes: embedInteropTypes));
+
+        static bool IsGlobalAlias(string alias) => string.Equals(alias, "global", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<AnalyzerReference> GetAnalyzerReferences(IAnalyzerResult analyzerResult, Workspace workspace, CommandLineArguments? commandLine)

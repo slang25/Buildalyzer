@@ -1485,6 +1485,51 @@ public class Differential_specs
     }
 
     [Test]
+    public async Task Global_reference_aliases_match_reference()
+    {
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "AliasedLibrary",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Widget.cs", "namespace AliasedLibrary;\npublic class Widget { }\n"));
+
+        // 'global' alongside an alias keeps the assembly in the global namespace as well, so the same
+        // types are reachable both unqualified and through the extern alias.
+        string appPath = fixture.AddProject(
+            "AliasApp",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source(
+                "Program.cs",
+                "extern alias Json;\nextern alias Lib;\n"
+                + "public class Program\n{\n"
+                + "    Json::Newtonsoft.Json.Linq.JObject? O; Newtonsoft.Json.Linq.JObject? GO;\n"
+                + "    Lib::AliasedLibrary.Widget? W; AliasedLibrary.Widget? GW;\n"
+                + "}\n"));
+        ProjectFixture.AddItem(appPath, "PackageReference", "Newtonsoft.Json", new Dictionary<string, string>
+        {
+            ["Version"] = "13.0.3",
+            ["Aliases"] = "global,Json",
+        });
+        ProjectFixture.AddItem(
+            appPath,
+            "ProjectReference",
+            Path.GetRelativePath(Path.GetDirectoryName(appPath)!, libraryPath).Replace('/', '\\'),
+            new Dictionary<string, string> { ["Aliases"] = "global,Lib" });
+        fixture.Restore(appPath);
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(appPath);
+        AssertLoadedCleanly(comparison);
+
+        ProjectShape ms = comparison.MSBuild.Shape();
+        ProjectShape ba = comparison.Buildalyzer.Shape();
+        ba.MetadataReferences.Should().BeEquivalentTo(ms.MetadataReferences);
+        ba.ProjectReferences.Should().BeEquivalentTo(ms.ProjectReferences);
+
+        (await CompilationErrors(comparison.MSBuild)).Should().BeEmpty();
+        (await CompilationErrors(comparison.Buildalyzer)).Should().BeEquivalentTo(await CompilationErrors(comparison.MSBuild));
+    }
+
+    [Test]
     public async Task Signing_options_match_reference()
     {
         using ProjectFixture fixture = new();

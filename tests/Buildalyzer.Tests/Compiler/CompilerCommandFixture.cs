@@ -102,11 +102,12 @@ public class CompilerCommandFixture
     }
 
     [Test]
-    public void Builds_reference_aliases_from_metadata_and_filters_global()
+    public void Builds_reference_aliases_from_metadata()
     {
         var references = new List<CompilerInputItem>
         {
             new("/refs/Aliased.dll", [("Aliases", "global,Foo,Bar")]),
+            new("/refs/GlobalOnly.dll", [("Aliases", "global")]),
             new("/refs/Plain.dll", CompilerInputItem.NoMetadata),
         };
         var taskInputs = Inputs(("References", references));
@@ -118,7 +119,12 @@ public class CompilerCommandFixture
         string aliased = Path.GetFullPath("/refs/Aliased.dll");
         command!.MetadataReferences.Should().Contain(aliased);
         command.Aliases.Should().ContainKey(aliased);
-        command.Aliases[aliased].Should().BeEquivalentTo("Foo", "Bar");
+
+        // 'global' next to another alias keeps the assembly in the global namespace too, so it is kept.
+        command.Aliases[aliased].Should().BeEquivalentTo("global", "Foo", "Bar");
+
+        // On its own it is the ordinary unaliased reference.
+        command.Aliases.Should().NotContainKey(Path.GetFullPath("/refs/GlobalOnly.dll"));
         command.Aliases.Should().NotContainKey(Path.GetFullPath("/refs/Plain.dll"));
     }
 
