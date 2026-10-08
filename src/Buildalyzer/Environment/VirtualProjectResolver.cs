@@ -155,6 +155,8 @@ internal sealed class VirtualProjectResolver(ILoggerFactory? factory)
 
         if (!processRunner.WaitForExit((int)WaitTime.TotalMilliseconds))
         {
+            // Disposing the runner only closes the handle; a wedged SDK would be left running.
+            processRunner.Kill();
             throw new InvalidOperationException(
                 $"`{dotnetExePath} run-api` did not respond within {WaitTime.TotalSeconds:0} seconds "
                 + $"for the file-based app {entryPointFilePath}.");

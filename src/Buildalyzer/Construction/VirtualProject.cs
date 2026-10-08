@@ -20,10 +20,15 @@ internal sealed class VirtualProject(
     string xml,
     string dotnetExePath)
 {
-    private readonly object _lock = new();
+    private static readonly object Lock = new();
 
-    /// <summary>The number of builds currently relying on the project being on disk.</summary>
-    private int _materializations;
+    /// <summary>The number of builds currently relying on each generated project being on disk.</summary>
+    /// <remarks>
+    /// Keyed by path rather than held per instance: every analyzer of the same file-based app (in this
+    /// manager or another) materializes the project at the same SDK-chosen path, so one analyzer's build
+    /// finishing must not delete the file out from under another's.
+    /// </remarks>
+    private static readonly Dictionary<IOPath, int> Materializations = [];
 
     /// <summary>The entry point file (the single <c>.cs</c> file) of the file-based app.</summary>
     public IOPath EntryPointFilePath { get; } = entryPointFilePath;
@@ -47,13 +52,15 @@ internal sealed class VirtualProject(
     {
         WarnOnGeneratorMismatch(buildDotnetExePath, logger);
 
-        lock (_lock)
+        var key = Path.Root();
+        lock (Lock)
         {
-            if (_materializations == 0)
+            Materializations.TryGetValue(key, out int count);
+            if (count == 0)
             {
                 Write();
             }
-            _materializations++;
+            Materializations[key] = count + 1;
         }
 
         return new Materialization(this, logger);
@@ -120,13 +127,17 @@ internal sealed class VirtualProject(
 
     private void Release(ILogger logger)
     {
-        lock (_lock)
+        var key = Path.Root();
+        lock (Lock)
         {
-            _materializations--;
-            if (_materializations > 0)
+            int count = Materializations[key] - 1;
+            if (count > 0)
             {
+                Materializations[key] = count;
                 return;
             }
+
+            Materializations.Remove(key);
 
             try
             {

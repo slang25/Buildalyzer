@@ -1151,13 +1151,19 @@ public class Differential_specs
                 ["Class1.cs"] = "namespace FoldersProject;\npublic class Class1 { }\n",
                 ["Models/Thing.cs"] = "namespace FoldersProject.Models;\npublic class Thing { }\n",
                 ["Models/Nested/Deep.cs"] = "namespace FoldersProject.Models.Nested;\npublic class Deep { }\n",
+
+                // Inside the project, despite the leading dots. The SDK's globs skip dot-prefixed folders,
+                // so it is included explicitly below.
+                ["..generated/Gen.cs"] = "namespace FoldersProject.Generated;\npublic class Gen { }\n",
             });
+        ProjectFixture.AddItem(projectPath, "Compile", "..generated/Gen.cs");
         fixture.Restore(projectPath);
 
         using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(projectPath);
         AssertLoadedCleanly(comparison);
 
         // MSBuildWorkspace records each document's logical folder path (e.g. Models/Nested).
+        DocumentFolders(comparison.MSBuild)["Gen.cs"].Should().Equal("..generated");
         DocumentFolders(comparison.Buildalyzer).Should().BeEquivalentTo(DocumentFolders(comparison.MSBuild));
     }
 

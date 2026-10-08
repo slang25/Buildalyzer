@@ -112,9 +112,9 @@ public class AnalyzerResult : IAnalyzerResult
 
     public IEnumerable<string> ProjectReferences =>
         Items.TryGetValue("ProjectReference", out IProjectItem[] items)
-            ? items.Distinct(new ProjectItemItemSpecEqualityComparer())
-                   .Select(x => IOPath.Parse(
+            ? items.Select(x => IOPath.Parse(
                         Path.Combine(Path.GetDirectoryName(ProjectFilePath), x.ItemSpec)).Root().ToString())
+                   .Distinct(IOPath.Comparer)
             : [];
 
     /// <inheritdoc/>

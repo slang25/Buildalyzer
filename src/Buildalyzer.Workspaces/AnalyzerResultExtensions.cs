@@ -917,7 +917,7 @@ public static class AnalyzerResultExtensions
         // GetRelativePath returns a rooted path when the file sits on a different drive/UNC root, and a
         // ..-prefixed path when it escapes the project directory on the same root. Either way the file is
         // outside the project cone, so it keeps no folders.
-        if (Path.IsPathRooted(relativePath) || relativePath.StartsWith("..", StringComparison.Ordinal))
+        if (Path.IsPathRooted(relativePath) || EscapesDirectory(relativePath))
         {
             return [];
         }
@@ -927,6 +927,13 @@ public static class AnalyzerResultExtensions
             ? []
             : relativeDirectory.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
     }
+
+    // Only a leading ".." segment escapes the directory: a folder that merely starts with two dots
+    // ("..generated/Foo.cs") is inside it.
+    private static bool EscapesDirectory(string relativePath)
+        => relativePath == ".."
+        || (relativePath.StartsWith("..", StringComparison.Ordinal)
+            && (relativePath[2] == Path.DirectorySeparatorChar || relativePath[2] == Path.AltDirectorySeparatorChar));
 
     private static IEnumerable<DocumentInfo> GetAdditionalDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {

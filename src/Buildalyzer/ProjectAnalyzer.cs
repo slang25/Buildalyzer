@@ -608,10 +608,23 @@ public class ProjectAnalyzer : IProjectAnalyzer
     /// The binlog file path, defaulting to the project path with a <c>.binlog</c> extension.
     /// </param>
     /// <param name="collectProjectImports">How MSBuild project imports are collected in the log.</param>
+    /// <exception cref="ArgumentException">The path contains a <c>;</c> or a <c>"</c>.</exception>
     public void AddBinaryLogger(
         string? binaryLogFilePath = null,
-        BinaryLogImports collectProjectImports = BinaryLogImports.Embed) =>
-        _binaryLogPaths.Add((
-            binaryLogFilePath ?? Path.ChangeExtension(ProjectFile.Path, "binlog"),
-            collectProjectImports.ToString()));
+        BinaryLogImports collectProjectImports = BinaryLogImports.Embed)
+    {
+        string path = binaryLogFilePath ?? Path.ChangeExtension(ProjectFile.Path, "binlog");
+
+        // MSBuild splits the /bl parameters on ';' without regard to quotes, and takes the log file name
+        // verbatim - it does not unescape %3B the way it does a project path - so there is no spelling of
+        // either character that reaches the binary logger intact. Fail here rather than with MSB1029 later.
+        if (path.IndexOfAny([';', '"']) >= 0)
+        {
+            throw new ArgumentException(
+                $"MSBuild cannot write a binary log to a path containing ';' or '\"': {path}",
+                nameof(binaryLogFilePath));
+        }
+
+        _binaryLogPaths.Add((path, collectProjectImports.ToString()));
+    }
 }

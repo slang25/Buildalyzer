@@ -17,3 +17,20 @@ public class Suffixed_binary_log_paths
         => ProjectAnalyzer.AddSuffixToBinaryLogPath(string.Empty, "net8.0")
             .Should().Be(string.Empty);
 }
+
+public class Binary_logger_paths
+{
+    // MSBuild splits /bl parameters on ';' and takes the file name verbatim (no %3B unescaping), so
+    // these can't be passed through and are rejected up front rather than failing the build with MSB1029.
+    [TestCase("logs/a;b.binlog")]
+    [TestCase("logs/a\"b.binlog")]
+    public void reject_characters_msbuild_cannot_receive(string path)
+    {
+        using var ctx = Buildalyzer.TestTools.Context.ForProject(@"SdkNetStandardProject\SdkNetStandardProject.csproj");
+        var analyzer = ctx.Manager.GetProject(ctx.Location.FullName);
+
+        analyzer.Invoking(a => a.AddBinaryLogger(path))
+            .Should().Throw<ArgumentException>()
+            .WithParameterName("binaryLogFilePath");
+    }
+}
