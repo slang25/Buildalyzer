@@ -1,3 +1,5 @@
+using System.IO;
+using System.Xml;
 using Buildalyzer.IO;
 using Microsoft.VisualStudio.SolutionPersistence.Model;
 
@@ -43,6 +45,30 @@ public sealed class ProjectInfo
         var prop = reference.FindProperties("TargetFrameworks")
             ?? reference.FindProperties("TargetFramework");
 
-        return new(reference, path, reference.Id, prop?.Values ?? []);
+        return new(reference, path, reference.Id, prop?.Values ?? TargetFrameworksOf(path));
+    }
+
+    /// <remarks>
+    /// The solution only carries target frameworks in a project's property bag when something put them
+    /// there, which an ordinary .sln or .slnx entry does not, so they are read from the project file. A
+    /// project the solution lists but that is missing or unreadable (an unloaded project, say) has none
+    /// rather than failing the whole solution.
+    /// </remarks>
+    [Pure]
+    private static string[] TargetFrameworksOf(IOPath path)
+    {
+        if (path.File() is not { Exists: true } file)
+        {
+            return [];
+        }
+
+        try
+        {
+            return new Construction.ProjectFile(file.FullName).TargetFrameworks;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or XmlException or ArgumentException)
+        {
+            return [];
+        }
     }
 }
