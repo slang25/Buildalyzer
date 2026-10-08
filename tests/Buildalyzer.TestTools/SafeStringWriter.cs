@@ -1,6 +1,6 @@
 using System.Threading;
 
-namespace Buildalyzer.Differential.Tests;
+namespace Buildalyzer.TestTools;
 
 /// <summary>
 /// A thread-safe <see cref="StringWriter"/>. Buildalyzer writes to its log writer from
@@ -8,7 +8,7 @@ namespace Buildalyzer.Differential.Tests;
 /// (whose backing <see cref="System.Text.StringBuilder"/> is not thread-safe) can corrupt
 /// or throw during a concurrent read. See https://github.com/xunit/xunit/issues/164.
 /// </summary>
-internal sealed class SafeStringWriter : StringWriter
+public sealed class SafeStringWriter : StringWriter
 {
     private readonly Lock _locker = new();
 

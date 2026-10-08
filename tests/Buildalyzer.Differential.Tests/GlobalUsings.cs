@@ -5,5 +5,6 @@ global using System.Linq;
 global using System.Threading.Tasks;
 global using AwesomeAssertions;
 global using Buildalyzer;
+global using Buildalyzer.TestTools;
 global using Buildalyzer.Workspaces;
 global using NUnit.Framework;
