@@ -924,7 +924,11 @@ public class Differential_specs
                 .Property("DefineConstants", "$(DefineConstants);CUSTOM_CONSTANT")
                 .Target(name: "FailBeforeCompile", beforeTargets: "CoreCompile")
                 .TaskError(text: "Simulated failure before Csc (#341)"),
-            Source("Class1.cs", "namespace FailBeforeCompile;\npublic class Class1 { }\n"));
+            new Dictionary<string, string>
+            {
+                ["Class1.cs"] = "namespace FailBeforeCompile;\npublic class Class1 { }\n",
+                [".editorconfig"] = "root = true\n\n[*.cs]\ndotnet_diagnostic.CA1822.severity = warning\n",
+            });
         fixture.Restore(projectPath);
 
         SafeStringWriter log = new();
@@ -935,6 +939,7 @@ public class Differential_specs
         // The build failed before the compiler ran, so CompilerCommand was never captured.
         result.Succeeded.Should().BeFalse(log.ToString());
         result.SourceFiles.Should().BeEmpty(log.ToString());
+        result.AnalyzerConfigFiles.Should().BeEmpty(log.ToString());
 
         using AdhocWorkspace workspace = result.GetWorkspace();
         Project project = workspace.CurrentSolution.Projects.Single();
@@ -948,6 +953,12 @@ public class Differential_specs
         // So are the analyzers the SDK resolved before the failure - the targeting pack's generators are
         // added by ResolveTargetingPackAssets, not at evaluation - and not only the evaluated ones.
         project.AnalyzerReferenceNames().Should().Contain("System.Text.Json.SourceGeneration.dll", log.ToString());
+
+        // And the analyzer configuration: the SDK gathers the .editorconfig files above the Compile items at
+        // evaluation (as the EditorConfigFiles items the compiler would have been handed), so the severities
+        // and generator options they carry survive the failure too. The build-generated
+        // GeneratedMSBuildEditorConfig.editorconfig, like the generated sources, does not.
+        project.AnalyzerConfigDocumentNames().Should().Contain(".editorconfig", log.ToString());
 
         // The same recovery has to be reachable from the analyzer- and manager-level entry points, which
         // build the project themselves rather than being handed a result.
@@ -1768,7 +1779,11 @@ public class Differential_specs
                 .Property("DefineConstants", "$(DefineConstants);CUSTOM_SYMBOL")
                 .Property("Features", "strict;debug-determinism")
                 .Property("GenerateDocumentationFile", "true"),
-            Source("Program.cs", "namespace NoCompilerOptions;\npublic static class Program { public static void Main() { } }\n"));
+            new Dictionary<string, string>
+            {
+                ["Program.cs"] = "namespace NoCompilerOptions;\npublic static class Program { public static void Main() { } }\n",
+                [".editorconfig"] = "root = true\n\n[*.cs]\ndotnet_diagnostic.CA1822.severity = warning\n",
+            });
         fixture.Restore(projectPath);
 
         // ResolveAssemblyReferences runs the SDK's reference resolution (so ReferencePath is captured for
@@ -1793,6 +1808,12 @@ public class Differential_specs
             .And.Contain(path => path.EndsWith("Program.cs", StringComparison.Ordinal));
         comparison.Buildalyzer.MetadataReferencePaths().Should().BeEquivalentTo(comparison.MSBuild.MetadataReferencePaths(), comparison.BuildalyzerLog);
         comparison.Buildalyzer.MetadataReferenceNames().Should().Contain(["netstandard.dll", "mscorlib.dll", "System.dll", "System.Xml.dll"]);
+
+        // Likewise the analyzer configuration: the .editorconfig the SDK discovers at evaluation is there, the
+        // GeneratedMSBuildEditorConfig.editorconfig that only the build produces is not.
+        comparison.Buildalyzer.AnalyzerConfigDocumentPaths().Should().BeSubsetOf(comparison.MSBuild.AnalyzerConfigDocumentPaths(), comparison.BuildalyzerLog);
+        comparison.Buildalyzer.AnalyzerConfigDocumentNames().Should().Contain(".editorconfig", comparison.BuildalyzerLog);
+        comparison.MSBuild.AnalyzerConfigDocumentNames().Should().Contain("NoCompilerOptions.GeneratedMSBuildEditorConfig.editorconfig");
     }
 
     [Test]

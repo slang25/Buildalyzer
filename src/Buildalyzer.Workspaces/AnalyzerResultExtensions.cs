@@ -736,6 +736,17 @@ public static class AnalyzerResultExtensions
             analyzerConfigFiles = [.. commandLine.AnalyzerConfigPaths];
         }
 
+        // Last resort, when the compiler never ran (issue #341): the SDK computes EditorConfigFiles at
+        // evaluation - every .editorconfig and .globalconfig in a directory above a Compile item, plus the
+        // project's own GlobalAnalyzerConfigFiles - and hands exactly that item group to the compiler task as
+        // AnalyzerConfigFiles, so a failed build still has the set that governs analyzer severities and
+        // source-generator options. Only the build-generated GeneratedMSBuildEditorConfig.editorconfig is
+        // missing, as the build-generated sources are; MSBuildWorkspace reads the same items in this case.
+        if (analyzerConfigFiles.Length == 0 && ShouldFallBackToItems(analyzerResult))
+        {
+            analyzerConfigFiles = GetItemPaths(analyzerResult, "EditorConfigFiles");
+        }
+
         return GetDocuments(
             analyzerConfigFiles,
             projectId,
