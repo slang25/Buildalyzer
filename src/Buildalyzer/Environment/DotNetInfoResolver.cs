@@ -88,7 +88,14 @@ internal sealed class DotNetInfoResolver
             factory);
 
         processRunner.Start();
-        processRunner.WaitForExit(GetWaitTime(factory.CreateLogger<DotNetInfoResolver>()));
+        var logger = factory.CreateLogger<DotNetInfoResolver>();
+        if (!processRunner.WaitForExit(GetWaitTime(logger)))
+        {
+            // Partial output is no answer; an empty one isn't cached, so the next project tries again.
+            logger.LogWarning("`{DotNetExePath} --info` did not exit in time", dotNetExePath);
+            processRunner.Kill();
+            return DotNetInfo.Parse((string?)null);
+        }
 
         return DotNetInfo.Parse(processRunner.Data.Output);
     }

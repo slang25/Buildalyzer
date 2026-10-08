@@ -67,8 +67,17 @@ public class EnvironmentFactory
         var resolver = _manager is AnalyzerManager manager ? manager.DotNetInfoResolver : new DotNetInfoResolver();
         var info = resolver.Resolve(IO.IOPath.Parse(_projectFile.Path), IO.IOPath.Parse(options.DotnetExePath), _manager.LoggerFactory);
 
-        if ((info.BasePath ?? info.Runtimes.Values.FirstOrDefault()) is not { } dotnetPath)
+        if (info.BasePath is not { } dotnetPath)
         {
+            // With a global.json that pins an SDK which isn't installed, `dotnet --info` still succeeds but
+            // reports only the host, the installed SDKs and the runtimes. No MSBuild can build the project
+            // then (`dotnet build` fails the same way), so say why rather than falling back to another one.
+            if (info.GlobalJson is { } globalJson)
+            {
+                throw new InvalidOperationException(
+                    $"The .NET SDK requested by {globalJson} is not installed (installed: {string.Join(", ", info.SDKs.Keys.Order())}).");
+            }
+
             Logger.LogWarning("Could not locate SDK path in `{DotnetPath} --info` results", options.DotnetExePath);
             return null;
         }
