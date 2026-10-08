@@ -255,7 +255,10 @@ public class SimpleProjectsFixture
                 "Settings.Designer.cs",
                 "GeneratedInternalTypeHelper.g.cs",
             ],
-            because: log.ToString());
+            because: log.ToString())
+            // The real source set is compiled twice under Build - once in WPF's "*_wpftmp" project, attributed to
+            // this result, and once by the project's own CoreCompile - and must not be listed twice.
+            .And.OnlyHaveUniqueItems(because: log.ToString());
     }
 
     [Test]

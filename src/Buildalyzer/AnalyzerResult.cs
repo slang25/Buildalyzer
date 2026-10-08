@@ -179,16 +179,14 @@ public class AnalyzerResult : IAnalyzerResult
     internal bool HasCommandLine => _commandLineText is { Length: > 0 };
 
     /// <summary>Records a compiler task's resolved input parameter (a structured item group with metadata).</summary>
+    /// <remarks>
+    /// The latest compiler invocation's parameter replaces an earlier one's rather than adding to it. A result
+    /// can see the compiler run more than once - WPF's full Build compiles the real source set in a temporary
+    /// "*_wpftmp" project, attributed to this result, before the project's own CoreCompile compiles it again -
+    /// and each run passes the complete set, so accumulating them would list every input twice.
+    /// </remarks>
     internal void AddTaskParameterInput(string itemType, IEnumerable<CompilerInputItem> items)
-    {
-        if (!_taskInputs.TryGetValue(itemType, out var list))
-        {
-            list = [];
-            _taskInputs[itemType] = list;
-        }
-
-        list.AddRange(items);
-    }
+        => _taskInputs[itemType] = [.. items];
 
     /// <summary>
     /// Records an item group a task produced during the build: the <c>ReferencePath</c> resolved by
