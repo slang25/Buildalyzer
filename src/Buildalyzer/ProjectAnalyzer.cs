@@ -226,7 +226,7 @@ public class ProjectAnalyzer : IProjectAnalyzer
     // Builds the /bl arguments for the requested binary logs. The suffix is taken from the explicit
     // override when given (parallel per-framework builds pass their own so they don't race on the shared
     // _binaryLogSuffix field), otherwise from the ambient suffix set by WithSuffixedBinaryLogPaths.
-    private IReadOnlyCollection<string> BinaryLogArguments(string? suffixOverride = null)
+    internal IReadOnlyCollection<string> BinaryLogArguments(string? suffixOverride = null)
     {
         if (_binaryLogPaths.Count == 0)
         {
@@ -632,6 +632,9 @@ public class ProjectAnalyzer : IProjectAnalyzer
                 nameof(binaryLogFilePath));
         }
 
-        _binaryLogPaths.Add((path, collectProjectImports.ToString()));
+        // Rooted here, against this process' current directory. MSBuild writes the log from its own working
+        // directory - the project's, or EnvironmentOptions.WorkingDirectory - so a relative path handed over
+        // as-is would land there rather than where the caller is, as it did when the logger ran in-process.
+        _binaryLogPaths.Add((Path.GetFullPath(path), collectProjectImports.ToString()));
     }
 }

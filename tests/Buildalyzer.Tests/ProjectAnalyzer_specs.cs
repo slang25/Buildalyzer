@@ -55,4 +55,18 @@ public class Binary_logger_paths
             .Should().Throw<ArgumentException>()
             .WithParameterName("binaryLogFilePath");
     }
+
+    // MSBuild writes the log from its own working directory (the project's), so a relative path is rooted
+    // here, against the caller's, as it was when the logger ran in-process.
+    [Test]
+    public void are_rooted_against_the_current_directory()
+    {
+        using var ctx = Buildalyzer.TestTools.Context.ForProject(@"SdkNetStandardProject\SdkNetStandardProject.csproj");
+        var analyzer = (ProjectAnalyzer)ctx.Manager.GetProject(ctx.Location.FullName);
+
+        analyzer.AddBinaryLogger("logs/project.binlog");
+
+        analyzer.BinaryLogArguments().Should().ContainSingle()
+            .Which.Should().Be($"/bl:LogFile=\"{System.IO.Path.GetFullPath("logs/project.binlog")}\";ProjectImports=Embed");
+    }
 }
