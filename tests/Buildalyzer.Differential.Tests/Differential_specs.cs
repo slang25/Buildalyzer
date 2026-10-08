@@ -1530,6 +1530,57 @@ public class Differential_specs
     }
 
     [Test]
+    public async Task Reference_aliases_reconstructed_without_a_compiler_invocation_match_reference()
+    {
+        // When the build never reaches CoreCompile (issue #341) the references come from the ReferencePath
+        // items ResolveAssemblyReference produced, whose Aliases and EmbedInteropTypes metadata is what the
+        // compiler task would have read. The reconstructed project has to carry them the same way, or an
+        // `extern alias` in the sources fails to bind (CS0430) where the real build compiles.
+        using ProjectFixture fixture = new();
+        string libraryPath = fixture.AddProject(
+            "AliasedLibrary",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source("Widget.cs", "namespace AliasedLibrary;\npublic class Widget { }\n"));
+        string appPath = fixture.AddProject(
+            "AliasApp",
+            p => p.Property("TargetFramework", TargetFramework),
+            Source(
+                "Program.cs",
+                "extern alias Json;\nextern alias Lib;\n"
+                + "public class Program\n{\n"
+                + "    Json::Newtonsoft.Json.Linq.JObject? O; Newtonsoft.Json.Linq.JObject? GO;\n"
+                + "    Lib::AliasedLibrary.Widget? W;\n"
+                + "}\n"));
+        ProjectFixture.AddItem(appPath, "PackageReference", "Newtonsoft.Json", new Dictionary<string, string>
+        {
+            ["Version"] = "13.0.3",
+            ["Aliases"] = "global,Json",
+        });
+        ProjectFixture.AddItem(
+            appPath,
+            "ProjectReference",
+            Path.GetRelativePath(Path.GetDirectoryName(appPath)!, libraryPath).Replace('/', '\\'),
+            new Dictionary<string, string> { ["Aliases"] = "Lib" });
+        fixture.Restore(appPath);
+
+        // ResolveAssemblyReferences produces ReferencePath but stops well short of CoreCompile.
+        Buildalyzer.Environment.EnvironmentOptions options = new();
+        options.TargetsToBuild.Clear();
+        options.TargetsToBuild.Add("ResolveAssemblyReferences");
+
+        using WorkspaceComparison comparison = await WorkspaceComparison.LoadAsync(appPath, options: options);
+
+        comparison.BuildalyzerLog.Should().Contain("No compiler invocation was captured");
+        ProjectShape ms = comparison.MSBuild.Shape();
+        ProjectShape ba = comparison.Buildalyzer.Shape();
+        ba.MetadataReferences.Should().BeEquivalentTo(ms.MetadataReferences, comparison.BuildalyzerLog);
+        ba.ProjectReferences.Should().BeEquivalentTo(ms.ProjectReferences, comparison.BuildalyzerLog);
+
+        // And the aliases actually bind on the reconstructed side too.
+        (await CompilationErrors(comparison.Buildalyzer)).Should().BeEmpty(comparison.BuildalyzerLog);
+    }
+
+    [Test]
     public async Task Signing_options_match_reference()
     {
         using ProjectFixture fixture = new();

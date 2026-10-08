@@ -573,7 +573,7 @@ public static class AnalyzerResultExtensions
 
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
-            references = GetItemPaths(analyzerResult, "ReferencePath");
+            return GetReferencePathItems(analyzerResult);
         }
 
         return references.Select(reference => new ReferencePath(
@@ -827,6 +827,43 @@ public static class AnalyzerResultExtensions
         && analyzerResult.Items.TryGetValue("Compile", out IProjectItem[] compileItems)
         && compileItems.Length > 0;
 
+    // The resolved ReferencePath items (captured from ResolveAssemblyReference, issue #341), each with the
+    // aliases and embed-interop flag its metadata carries: the compiler task reads both off these same items,
+    // forwarded from the Reference/ProjectReference items, so a reconstructed project that dropped them would
+    // compile differently from the build. One entry per path, as the compiler-side maps are keyed. A lone
+    // 'global' alias is the ordinary unaliased reference, which no aliases already means (and which
+    // CreateMetadataReferences would otherwise split into two identical references).
+    private static IEnumerable<ReferencePath> GetReferencePathItems(IAnalyzerResult analyzerResult)
+    {
+        if (!analyzerResult.Items.TryGetValue("ReferencePath", out IProjectItem[] items) || items.Length == 0)
+        {
+            return [];
+        }
+
+        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        return items
+            .GroupBy(x => Path.GetFullPath(x.ItemSpec, projectDirectory!), IOPath.Comparer)
+            .Select(group =>
+            {
+                ImmutableArray<string> aliases = [.. group.SelectMany(AliasNames).Distinct(StringComparer.Ordinal)];
+                return new ReferencePath(
+                    group.Key,
+                    aliases.All(IsGlobalAlias) ? [] : aliases,
+                    group.Any(EmbedsInteropTypes));
+            });
+
+        static IEnumerable<string> AliasNames(IProjectItem item)
+            => Metadata(item, "Aliases").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        static bool EmbedsInteropTypes(IProjectItem item)
+            => string.Equals(Metadata(item, "EmbedInteropTypes").Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+        static string Metadata(IProjectItem item, string name)
+            => item.Metadata.FirstOrDefault(m => string.Equals(m.Key, name, StringComparison.OrdinalIgnoreCase)).Value ?? string.Empty;
+
+        static bool IsGlobalAlias(string alias) => string.Equals(alias, "global", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Resolves the <c>ItemSpec</c> of each item of the given type to a full path.</summary>
     private static string[] GetItemPaths(IAnalyzerResult analyzerResult, string itemType)
     {
@@ -975,7 +1012,9 @@ public static class AnalyzerResultExtensions
         // bind types (issue #341).
         if (references.Length == 0 && ShouldFallBackToItems(analyzerResult))
         {
-            references = GetItemPaths(analyzerResult, "ReferencePath");
+            return GetReferencePathItems(analyzerResult)
+                .Where(r => File.Exists(r.Reference))
+                .SelectMany(r => CreateMetadataReferences(r.Reference, r.Aliases, r.EmbedInteropTypes));
         }
 
         return references
