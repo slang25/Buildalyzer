@@ -1,6 +1,28 @@
 using Buildalyzer;
+using Buildalyzer.Logging;
 
 namespace ProjectAnalyzer_specs;
+
+public class Evaluated_target_frameworks
+{
+    // A framework listed twice (a props file composing "$(TargetFrameworks);net8.0" over a project that
+    // already lists net8.0, say) builds once, as MSBuild's own _ComputeTargetFrameworkItems has it; two
+    // concurrent builds pinned to the same framework would write to the same obj directory.
+    [Test]
+    public void are_distinct()
+    {
+        var result = new AnalyzerResult(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "project.csproj"), new AnalyzerManager(), null);
+        result.ProcessProject(new PropertiesAndItems
+        {
+            Properties = new CompilerProperties([new("TargetFrameworks", "net8.0; net8.0;NET9.0;net9.0;")]),
+            Items = CompilerItemsCollection.Empty,
+        });
+        AnalyzerResults results = [];
+        results.Add([result], overallSuccess: true);
+
+        ProjectAnalyzer.EvaluatedTargetFrameworks(results).Should().Equal("net8.0", "NET9.0");
+    }
+}
 
 public class Suffixed_binary_log_paths
 {

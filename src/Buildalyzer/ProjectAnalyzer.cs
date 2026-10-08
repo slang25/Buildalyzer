@@ -393,7 +393,7 @@ public class ProjectAnalyzer : IProjectAnalyzer
     // project that overrides an imported <TargetFrameworks> (from Directory.Build.props, say) with its own
     // <TargetFramework> still evaluates with both set, but it is an ordinary single-targeted build, and
     // rebuilding it per listed framework would pin it to frameworks it never targets.
-    private static string[] EvaluatedTargetFrameworks(IAnalyzerResults results)
+    internal static string[] EvaluatedTargetFrameworks(IAnalyzerResults results)
     {
         foreach (IAnalyzerResult result in results)
         {
@@ -406,8 +406,15 @@ public class ProjectAnalyzer : IProjectAnalyzer
             if (result.Properties.TryGetValue("TargetFrameworks", out string value)
                 && !string.IsNullOrWhiteSpace(value))
             {
-                string[] targetFrameworks = value.Split(
-                    [';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                // Distinct, as MSBuild's own _ComputeTargetFrameworkItems is: a framework listed twice (a props
+                // file composing "$(TargetFrameworks);net8.0" over a project that already lists net8.0, say)
+                // would otherwise build twice, concurrently, into the same obj directory.
+                string[] targetFrameworks =
+                [
+                    .. value
+                        .Split([';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                ];
                 if (targetFrameworks.Length > 0)
                 {
                     return targetFrameworks;
