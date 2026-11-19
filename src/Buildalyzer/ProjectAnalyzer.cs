@@ -540,9 +540,36 @@ public class ProjectAnalyzer : IProjectAnalyzer
         results.BuildEventArguments = [.. eventCollector];
 
         // Collect the results
-        results.Add(eventProcessor.Results, exitCode == 0 && eventProcessor.OverallSuccess);
+        bool restored = MarkUnrestoredResultsFailed(eventProcessor.Results);
+        results.Add(eventProcessor.Results, exitCode == 0 && eventProcessor.OverallSuccess && restored);
 
         return results;
+    }
+
+    // A design-time build of a PackageReference project that has never been restored still "succeeds": the SDK
+    // skips ResolvePackageAssets when DesignTimeBuild=true and the assets file is missing, instead of raising
+    // NETSDK1004. The compiler command it captures then has no package references and, for any framework whose
+    // targeting pack isn't bundled with the SDK, no framework references either. Reporting that as a success
+    // hides the one fix (Restore = true) from callers that only retry on failure, so flag it as a failure.
+    private bool MarkUnrestoredResultsFailed(IEnumerable<IAnalyzerResult> results)
+    {
+        bool restored = true;
+        foreach (AnalyzerResult result in results.OfType<AnalyzerResult>())
+        {
+            if (result.GetProperty("RestoreProjectStyle") == "PackageReference"
+                && result.GetProperty("ProjectAssetsFile") is { Length: > 0 } assetsFile
+                && !File.Exists(Path.Combine(Path.GetDirectoryName(ProjectFile.Path)!, assetsFile)))
+            {
+                restored = false;
+                result.Succeeded = false;
+                Logger?.LogWarning(
+                    "{ProjectFile} has not been restored ({AssetsFile} is missing), so its package and framework references are incomplete. Build with EnvironmentOptions.Restore = true.",
+                    ProjectFile.Path,
+                    assetsFile);
+            }
+        }
+
+        return restored;
     }
 
     public void SetGlobalProperty(string key, string value)
