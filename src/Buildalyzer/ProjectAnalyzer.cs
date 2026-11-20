@@ -348,6 +348,8 @@ public class ProjectAnalyzer : IProjectAnalyzer
         IAnalyzerResults results = Build((string?)null, environmentFor(null));
         if (results.OverallSuccess || EvaluatedTargetFrameworks(results).Length == 0)
         {
+            // Discovery above needed the outer build's evaluation; the caller gets the per-framework results.
+            (results as AnalyzerResults)?.RemoveCrossTargetingOuterBuilds();
             return results;
         }
 
@@ -397,14 +399,8 @@ public class ProjectAnalyzer : IProjectAnalyzer
     {
         foreach (IAnalyzerResult result in results)
         {
-            if (result.Properties.TryGetValue("TargetFramework", out string targetFramework)
-                && !string.IsNullOrWhiteSpace(targetFramework))
-            {
-                continue;
-            }
-
-            if (result.Properties.TryGetValue("TargetFrameworks", out string value)
-                && !string.IsNullOrWhiteSpace(value))
+            if (AnalyzerResults.IsCrossTargetingOuterBuild(result)
+                && result.Properties.TryGetValue("TargetFrameworks", out string? value))
             {
                 // Distinct, as MSBuild's own _ComputeTargetFrameworkItems is: a framework listed twice (a props
                 // file composing "$(TargetFrameworks);net8.0" over a project that already lists net8.0, say)
@@ -519,7 +515,12 @@ public class ProjectAnalyzer : IProjectAnalyzer
             new LoggerConfiguration
             {
                 ClientHandle = pipeLogger.GetClientHandle(),
-                LogEverything = _binaryLogPaths.Count > 0,
+
+                // Only the events Buildalyzer reads, even when a binary log is attached: MSBuild writes that log
+                // itself (/bl), so nothing downstream of the pipe needs the rest. Forwarding everything is a
+                // leftover from when attached loggers ran in this process off the piped events, and it bypasses
+                // the logger's handling of evaluation data that /bl moves onto ProjectEvaluationFinished.
+                LogEverything = false,
             },
             BinaryLogArguments(binaryLogSuffix));
 

@@ -28,6 +28,8 @@ public class Analyze_binary_log
 
             IAnalyzerResults results = context.Manager.Analyze(binaryLogPath);
 
+            // The log also holds the outer, cross-targeting build, which compiles nothing and is not a result.
+            results.TargetFrameworks.Should().BeEquivalentTo("net8.0", "netstandard2.0");
             SourceFileNames(results, "net8.0").Should().Contain("Net8Only.cs").And.NotContain("NetStandardOnly.cs");
             SourceFileNames(results, "netstandard2.0").Should().Contain("NetStandardOnly.cs").And.NotContain("Net8Only.cs");
         }

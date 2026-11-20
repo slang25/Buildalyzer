@@ -122,7 +122,11 @@ internal sealed class EventProcessor : IDisposable
             return;
         }
 
-        if (propertiesAndItems is { Properties: { }, Items: { } })
+        // An empty property set is no evaluation data at all - every evaluation defines hundreds of properties -
+        // so it is treated as missing rather than turned into a result with no target framework. That is what
+        // a live build used to deliver when MSBuild moved the evaluation onto ProjectEvaluationFinished and the
+        // pipe dropped it: a result keyed "" that every inner build of a multi-targeted project collapsed into.
+        if (propertiesAndItems is { Properties.Count: > 0, Items: { } })
         {
             string key = ResultKey(propertiesAndItems);
             if (!_results.TryGetValue(key, out AnalyzerResult result))
@@ -141,7 +145,13 @@ internal sealed class EventProcessor : IDisposable
 
         // The primary project, but without the evaluation data needed to build a result from it. Record the
         // context anyway so its later events are recognised as the primary project's and skipped, rather
-        // than falling through to whichever result happens to be around.
+        // than falling through to whichever result happens to be around. Debug rather than a warning: a healthy
+        // build raises such a ProjectStarted too, for a further build request against a configuration whose
+        // evaluation was already logged.
+        _logger?.LogDebug(
+            "No evaluation properties arrived for {ProjectFile} (project context {ContextId}); that build adds no result.",
+            projectFile,
+            contextId);
         _resultsByContext[contextId] = null;
     }
 

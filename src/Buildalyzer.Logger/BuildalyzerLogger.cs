@@ -109,6 +109,23 @@ public class BuildalyzerLogger : PipeLogger
 
     private void OnAnyEventRaised(object sender, BuildEventArgs e)
     {
+        // The evaluation's properties and items normally ride on ProjectStarted. Once any logger opts in to
+        // IncludeEvaluationPropertiesAndItems - /bl does, so does the dotnet CLI's telemetry logger, and
+        // MSBUILDLOGPROPERTIESANDITEMSAFTEREVALUATION=1 forces it - MSBuild moves them onto
+        // ProjectEvaluationFinished instead, for every logger: central loggers share one event sink, so this
+        // one's ProjectStarted arrives empty too. Forward the evaluation whenever it carries the data. This
+        // handler is only attached where IEventSource4 exists, which is exactly where the data can move: the
+        // opt-in that moves it is that interface's only member.
+        if (e is ProjectEvaluationFinishedEventArgs evaluation)
+        {
+            if (evaluation.Properties is not null || evaluation.Items is not null)
+            {
+                Pipe!.Write(EvaluationDataNormalizer.Normalize(evaluation));
+            }
+
+            return;
+        }
+
         if (e is not TaskParameterEventArgs parameter)
         {
             return;

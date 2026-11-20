@@ -159,10 +159,14 @@ public class AnalyzerManager : IAnalyzerManager
         }
 
         // The exit code counts towards the outcome as it does for a live build.
-        return new AnalyzerResults
+        AnalyzerResults results = new AnalyzerResults
         {
             { eventProcessor.Results, processRunner.ExitCode == 0 && eventProcessor.OverallSuccess }
         };
+
+        // A live build never hands out a multi-targeted project's outer build, so neither does its replay.
+        results.RemoveCrossTargetingOuterBuilds();
+        return results;
     }
 
     /// <summary>How long to wait for a replay process' output to finish arriving once it has exited.</summary>
