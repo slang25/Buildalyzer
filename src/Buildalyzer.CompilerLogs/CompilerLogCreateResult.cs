@@ -27,8 +27,11 @@ public sealed class CompilerLogCreateResult
     public IReadOnlyList<CompilerCall> CompilerCalls { get; }
 
     /// <summary>
-    /// Diagnostics produced while writing the log, including those raised by the
-    /// underlying compiler log writer (missing files, unreadable content and the like).
+    /// Human-readable notes produced while writing the log, one per line, for display or logging; they are
+    /// not meant to be parsed. They name each project that could not be written and why (no compiler
+    /// command line was captured because its build stopped before the compiler ran, or adding it failed),
+    /// each project skipped because it is not C# or Visual Basic, and anything raised by the underlying
+    /// compiler log writer (missing files, unreadable content and the like).
     /// </summary>
     public IReadOnlyList<string> Diagnostics { get; }
 }

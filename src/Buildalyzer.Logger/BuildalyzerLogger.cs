@@ -40,6 +40,10 @@ public class BuildalyzerLogger : PipeLogger
 
     protected override IPipeWriter InitializePipeWriter() => new AnonymousPipeWriter(_pipeHandleAsString);
 
+    // The base class only exposes its writer as a nullable property, because it is created during Initialize.
+    // Every handler below runs after Initialize has returned, so the writer is always there by then.
+    private IPipeWriter Writer => Pipe ?? throw new InvalidOperationException("The pipe writer has not been initialized.");
+
     protected override void InitializeEvents(IEventSource eventSource)
     {
         if (eventSource is null)
@@ -54,10 +58,10 @@ public class BuildalyzerLogger : PipeLogger
         }
 
         // Only log what we need for Buildalyzer
-        eventSource.ProjectStarted += (_, e) => Pipe!.Write(e);
-        eventSource.ProjectFinished += (_, e) => Pipe!.Write(e);
-        eventSource.BuildFinished += (_, e) => Pipe!.Write(e);
-        eventSource.ErrorRaised += (_, e) => Pipe!.Write(e);
+        eventSource.ProjectStarted += (_, e) => Writer.Write(e);
+        eventSource.ProjectFinished += (_, e) => Writer.Write(e);
+        eventSource.BuildFinished += (_, e) => Writer.Write(e);
+        eventSource.ErrorRaised += (_, e) => Writer.Write(e);
         eventSource.TargetStarted += TargetStarted;
         eventSource.TargetFinished += TargetFinished;
         eventSource.MessageRaised += MessageRaised;
@@ -74,12 +78,11 @@ public class BuildalyzerLogger : PipeLogger
         TryIncludeTaskInputs(eventSource);
     }
 
-    // The IEventSource4 test lives in its own method, called through this one: the JIT resolves a type when
-    // it compiles the method that names it, not when the test runs, so on an MSBuild whose Framework
-    // assembly predates IEventSource4 the method naming it fails to compile with a TypeLoadException. That
-    // is caught here, in a method that names none of the newer types, so the logger still initializes and
+    // The JIT resolves the types a method names when it compiles that method, not when the line naming them
+    // runs. On an MSBuild whose Framework assembly predates IEventSource4, compiling IncludeTaskInputs therefore
+    // throws a TypeLoadException. That compilation happens at the call below, inside the try, and the exception
+    // is caught there: this method names none of the newer types, so the logger still initializes and
     // Buildalyzer falls back to the evaluation-time items.
-    [MethodImpl(MethodImplOptions.NoInlining)]
     private void TryIncludeTaskInputs(IEventSource eventSource)
     {
         try
@@ -92,6 +95,9 @@ public class BuildalyzerLogger : PipeLogger
         }
     }
 
+    // NoInlining is what makes the catch in TryIncludeTaskInputs work. If the JIT inlined this method into its
+    // caller, IEventSource4 and TaskParameterEventArgs would be resolved while compiling TryIncludeTaskInputs,
+    // before its try block is entered, and the TypeLoadException would escape Initialize and fail the build.
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void IncludeTaskInputs(IEventSource eventSource)
     {
@@ -120,7 +126,7 @@ public class BuildalyzerLogger : PipeLogger
         {
             if (evaluation.Properties is not null || evaluation.Items is not null)
             {
-                Pipe!.Write(EvaluationDataNormalizer.Normalize(evaluation));
+                Writer.Write(EvaluationDataNormalizer.Normalize(evaluation));
             }
 
             return;
@@ -135,7 +141,8 @@ public class BuildalyzerLogger : PipeLogger
         // SDK resolves before it - ResolveAssemblyReference's ReferencePath, and the analyzers that
         // ResolveTargetingPackAssets (into Analyzer) and ResolvePackageAssets (into ResolvedAnalyzers) produce -
         // so the workspace can still be reconstructed when the build fails before CoreCompile runs (issue #341).
-        bool compilerInput = _coreCompileContexts.Contains(ProjectContextId(parameter))
+        bool compilerInput = ProjectContextId(parameter) is { } contextId
+            && _coreCompileContexts.Contains(contextId)
             && parameter.Kind == TaskParameterMessageKind.TaskInput
             && IsCompilerInput(parameter.ItemType);
         bool resolvedBeforeCompile = parameter.Kind == TaskParameterMessageKind.TaskOutput
@@ -143,7 +150,7 @@ public class BuildalyzerLogger : PipeLogger
 
         if (compilerInput || resolvedBeforeCompile)
         {
-            Pipe!.Write(e);
+            Writer.Write(e);
         }
     }
 
@@ -153,14 +160,14 @@ public class BuildalyzerLogger : PipeLogger
     // still running. Targets don't nest within a project context, so a set of context ids is enough.
     private readonly HashSet<int> _coreCompileContexts = [];
 
-    // Events without a build context are grouped under a single sentinel id rather than dropped, so target
-    // and task events that both lack one still pair up.
+    // MSBuild stamps every target and task event with a build context, so a missing one is not expected in
+    // practice. Should one arrive, it can't be attributed to a project: it never enters or leaves CoreCompile
+    // tracking, and its task inputs are not forwarded as compiler inputs.
     //
     // The id alone is a safe key even under /m: a project-context id is unique across the whole build, not
     // just its own node. MSBuild's LoggingService seeds each node's counter with the node id and advances it
     // by MaxCPUCount + 2, so nodes allocate from disjoint ranges and never collide.
-    private static int ProjectContextId(BuildEventArgs e)
-        => e.BuildEventContext is BuildEventContext context ? context.ProjectContextId : int.MinValue;
+    private static int? ProjectContextId(BuildEventArgs e) => e.BuildEventContext?.ProjectContextId;
 
     // MSBuild only forwards ITaskItem[] task inputs at normal verbosity (not scalar string parameters such
     // as DefineConstants), so only the compiler's item-group inputs are listed here. Preprocessor symbols are
@@ -172,17 +179,19 @@ public class BuildalyzerLogger : PipeLogger
     // the compiler runs still yields its resolved references and analyzers. MSBuild item names are
     // case-insensitive, unlike the task parameter names above.
     private static bool IsResolvedBeforeCompile(string? itemType) =>
-        string.Equals(itemType, "ReferencePath", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(itemType, "Analyzer", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(itemType, "ResolvedAnalyzers", StringComparison.OrdinalIgnoreCase);
+        itemType.IsMatch("ReferencePath") || itemType.IsMatch("Analyzer") || itemType.IsMatch("ResolvedAnalyzers");
 
     private void TargetStarted(object sender, TargetStartedEventArgs e)
     {
         // Only send the CoreCompile target
         if (e.TargetName == "CoreCompile")
         {
-            _coreCompileContexts.Add(ProjectContextId(e));
-            Pipe!.Write(e);
+            if (ProjectContextId(e) is { } contextId)
+            {
+                _coreCompileContexts.Add(contextId);
+            }
+
+            Writer.Write(e);
         }
     }
 
@@ -191,20 +200,23 @@ public class BuildalyzerLogger : PipeLogger
         // Only send the CoreCompile target
         if (e.TargetName == "CoreCompile")
         {
-            _coreCompileContexts.Remove(ProjectContextId(e));
-            Pipe!.Write(e);
+            if (ProjectContextId(e) is { } contextId)
+            {
+                _coreCompileContexts.Remove(contextId);
+            }
+
+            Writer.Write(e);
         }
     }
 
     private void MessageRaised(object sender, BuildMessageEventArgs e)
     {
         // Only send if in the Csc Vbc, or the Fsc task
-        if ((e is TaskCommandLineEventArgs cmd &&
-            string.Equals(cmd.TaskName, "Csc", StringComparison.OrdinalIgnoreCase)) ||
-            string.Equals(e.SenderName, "Fsc", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(e.SenderName, "Vbc", StringComparison.OrdinalIgnoreCase))
+        if ((e is TaskCommandLineEventArgs cmd && cmd.TaskName.IsMatch("Csc"))
+            || e.SenderName.IsMatch("Fsc")
+            || e.SenderName.IsMatch("Vbc"))
         {
-            Pipe!.Write(e);
+            Writer.Write(e);
         }
     }
 }

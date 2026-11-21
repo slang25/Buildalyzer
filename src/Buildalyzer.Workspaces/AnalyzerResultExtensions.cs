@@ -160,9 +160,8 @@ public static class AnalyzerResultExtensions
             }
         }
 
-        while (pending.Count > 0)
+        while (pending.TryDequeue(out var analyzer))
         {
-            IProjectAnalyzer analyzer = pending.Dequeue();
             foreach (string reference in ((ProjectFile)analyzer.ProjectFile).ProjectReferences)
             {
                 if (ResolveReferenced(manager, reference) is { } referenced
@@ -275,7 +274,7 @@ public static class AnalyzerResultExtensions
         // references. It is the authoritative record of what the compiler actually saw and is present in
         // virtually every binary log (the csc/vbc command line is a normal-verbosity message), so it also
         // backfills the compiler-derived inputs when the structured task-input events weren't captured.
-        string? projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         CommandLineArguments? commandLine = ParseCommandLine(analyzerResult, languageName, projectDirectory);
         if (commandLine is null)
         {
@@ -606,6 +605,13 @@ public static class AnalyzerResultExtensions
 
     internal static string NormalizePath(string path) => Path.GetFullPath(path);
 
+    /// <summary>
+    /// Gets the directory of the project file, which relative item paths and compiler arguments resolve
+    /// against, or <see langword="null"/> when the result has no project file path.
+    /// </summary>
+    private static string? ProjectDirectory(IAnalyzerResult analyzerResult)
+        => IOPath.Parse(analyzerResult.ProjectFilePath).File()?.DirectoryName;
+
     private static Microsoft.CodeAnalysis.ProjectInfo? GetProjectInfo(
         IAnalyzerResult analyzerResult, Workspace workspace, ProjectId projectId, string projectName,
         string languageName, string? projectDirectory, CommandLineArguments? commandLine)
@@ -701,7 +707,7 @@ public static class AnalyzerResultExtensions
     private static (CompilationOptions? CompilationOptions, ParseOptions? ParseOptions) CreateRawOptions(
         IAnalyzerResult analyzerResult, string languageName, CommandLineArguments? commandLine)
     {
-        commandLine ??= EvaluatedCommandLine.Parse(analyzerResult, languageName, Path.GetDirectoryName(analyzerResult.ProjectFilePath));
+        commandLine ??= EvaluatedCommandLine.Parse(analyzerResult, languageName, ProjectDirectory(analyzerResult));
         return commandLine is null ? (null, null) : (commandLine.CompilationOptions, commandLine.ParseOptions);
     }
 
@@ -750,7 +756,7 @@ public static class AnalyzerResultExtensions
         return GetDocuments(
             analyzerConfigFiles,
             projectId,
-            Path.GetDirectoryName(analyzerResult.ProjectFilePath),
+            ProjectDirectory(analyzerResult),
             GetChecksumAlgorithm(analyzerResult),
             GetDocumentLinks(analyzerResult, "EditorConfigFiles"));
     }
@@ -778,7 +784,7 @@ public static class AnalyzerResultExtensions
         return GetDocuments(
             sourceFiles,
             projectId,
-            Path.GetDirectoryName(analyzerResult.ProjectFilePath),
+            ProjectDirectory(analyzerResult),
             GetChecksumAlgorithm(analyzerResult),
             GetDocumentLinks(analyzerResult, "Compile"));
     }
@@ -851,7 +857,7 @@ public static class AnalyzerResultExtensions
             return [];
         }
 
-        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         return items
             .GroupBy(x => Path.GetFullPath(x.ItemSpec, projectDirectory!), IOPath.Comparer)
             .Select(group =>
@@ -883,7 +889,7 @@ public static class AnalyzerResultExtensions
             return [];
         }
 
-        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         return [.. items
             .Select(x => Path.GetFullPath(x.ItemSpec, projectDirectory!))
             .Distinct(IOPath.Comparer)];
@@ -920,7 +926,7 @@ public static class AnalyzerResultExtensions
             return ImmutableDictionary<string, string>.Empty;
         }
 
-        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         Dictionary<string, string> links = new(IOPath.Comparer);
         foreach (IProjectItem item in items)
         {
@@ -985,7 +991,7 @@ public static class AnalyzerResultExtensions
 
     private static IEnumerable<DocumentInfo> GetAdditionalDocuments(IAnalyzerResult analyzerResult, ProjectId projectId, CommandLineArguments? commandLine)
     {
-        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         string[] additionalFiles = analyzerResult.AdditionalFiles ?? [];
 
         IReadOnlyDictionary<string, string> links = GetDocumentLinks(analyzerResult, "AdditionalFiles");
@@ -1059,7 +1065,7 @@ public static class AnalyzerResultExtensions
     {
         IAnalyzerAssemblyLoader loader = workspace.Services.GetRequiredService<IAnalyzerService>().GetLoader();
 
-        string projectDirectory = Path.GetDirectoryName(analyzerResult.ProjectFilePath);
+        string? projectDirectory = ProjectDirectory(analyzerResult);
         string[] analyzerReferences = analyzerResult.AnalyzerReferences ?? [];
 
         // Backfill from the command line's /analyzer: switches when task inputs weren't captured.
