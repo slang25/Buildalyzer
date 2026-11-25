@@ -121,12 +121,14 @@ public class BuildalyzerLogger : PipeLogger
         // ProjectEvaluationFinished instead, for every logger: central loggers share one event sink, so this
         // one's ProjectStarted arrives empty too. Forward the evaluation whenever it carries the data. This
         // handler is only attached where IEventSource4 exists, which is exactly where the data can move: the
-        // opt-in that moves it is that interface's only member.
+        // opt-in that moves it is that interface's only member. On a live build these collections hold
+        // MSBuild's own property and item instances rather than the DictionaryEntry pairs a replayed log
+        // carries; XenoAtom.MsBuildPipeLogger serializes both from 2.0.3 on.
         if (e is ProjectEvaluationFinishedEventArgs evaluation)
         {
             if (evaluation.Properties is not null || evaluation.Items is not null)
             {
-                Writer.Write(EvaluationDataNormalizer.Normalize(evaluation));
+                Writer.Write(evaluation);
             }
 
             return;
